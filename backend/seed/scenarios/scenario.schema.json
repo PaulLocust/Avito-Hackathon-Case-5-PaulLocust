@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PaulLocust/Avito-Hackathon-Case-5/backend/seed/scenarios/scenario.schema.json",
+  "title": "Сценарий тренировки",
+  "description": "Контракт между контентом (M5) и движком прохождения (M2). Схема фиксируется в первый день и меняется только по согласованию обоих модулей. Поле version в файле отсутствует намеренно: версию присваивает загрузчик по хешу содержимого (FR32).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "code",
+    "role",
+    "title",
+    "description",
+    "difficulty",
+    "start_step",
+    "steps"
+  ],
+  "properties": {
+    "code": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]{3,64}$",
+      "description": "Стабильный код сценария. Не меняется между версиями: по нему связаны сессии и история попыток."
+    },
+    "role": {
+      "enum": ["buyer", "seller"],
+      "description": "Роль, за которую играет пользователь."
+    },
+    "title": { "type": "string", "minLength": 3, "maxLength": 120 },
+    "description": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 400,
+      "description": "Краткое описание для карточки на витрине."
+    },
+    "intro": {
+      "type": "string",
+      "maxLength": 600,
+      "description": "Вводный текст экрана подтверждения старта."
+    },
+    "difficulty": { "enum": ["basic", "advanced", "demo"] },
+    "estimated_minutes": { "type": "integer", "minimum": 1, "maximum": 30 },
+    "start_step": {
+      "type": "string",
+      "description": "Код шага, с которого начинается прохождение."
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 12,
+      "description": "Шаги сценария: от 3 до 8 шагов типа dialog плюс терминальные. Соотношение проверяется валидатором загрузки, а не схемой.",
+      "items": { "$ref": "#/$defs/step" }
+    }
+  },
+  "$defs": {
+    "riskSignalCode": {
+      "type": "string",
+      "pattern": "^RISK_[A-Z_]{3,48}$",
+      "description": "Код признака риска из seed/risk_signals.json. Существование кода проверяет валидатор загрузки."
+    },
+    "stepCode": { "type": "string", "pattern": "^[a-z0-9_-]{1,32}$" },
+    "content": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["message"],
+      "properties": {
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "Реплика или текст шага. Ссылки и реквизиты внутри — имитация: домены не существуют, номера никому не принадлежат (SEC8)."
+        },
+        "sender": {
+          "enum": ["counterparty", "platform", "narrator"],
+          "default": "counterparty"
+        },
+        "context": {
+          "type": "string",
+          "maxLength": 400,
+          "description": "Пояснение обстановки, если реплики недостаточно."
+        },
+        "attachment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "caption"],
+          "properties": {
+            "kind": { "enum": ["link", "screenshot", "document"] },
+            "caption": { "type": "string", "minLength": 1, "maxLength": 200 }
+          }
+        }
+      }
+    },
+    "option": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "text", "outcome", "score", "feedback", "next_step"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^[a-z0-9_-]{1,32}$" },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Действие пользователя. Не должно содержать оценки: пользователь выбирает поступок, а не ответ «верно/неверно»."
+        },
+        "outcome": {
+          "enum": ["safe", "risky", "critical"],
+          "description": "safe — риск распознан; risky — диалог продолжен без защиты; critical — действие, которое стоило бы денег или аккаунта."
+        },
+        "score": {
+          "enum": [10, 0, -10],
+          "description": "Вес варианта. Должен соответствовать outcome — сверяется валидатором."
+        },
+        "feedback": {
+          "type": "string",
+          "minLength": 20,
+          "maxLength": 800,
+          "description": "Объяснение по схеме «признак → причина → альтернатива». Формулировки «правильно» и «неправильно» не допускаются (USR4)."
+        },
+        "next_step": {
+          "type": "string",
+          "pattern": "^[a-z0-9_-]{1,32}$",
+          "description": "Код следующего шага. Ветвление должно сходиться обратно в основную линию: отдельные концовки допустимы только на терминальных шагах."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "outcome": { "const": "safe" } } },
+          "then": { "properties": { "score": { "const": 10 } } }
+        },
+        {
+          "if": { "properties": { "outcome": { "const": "risky" } } },
+          "then": { "properties": { "score": { "const": 0 } } }
+        },
+        {
+          "if": { "properties": { "outcome": { "const": "critical" } } },
+          "then": { "properties": { "score": { "const": -10 } } }
+        }
+      ]
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "type", "content", "risk_signals"],
+      "properties": {
+        "code": { "$ref": "#/$defs/stepCode" },
+        "type": { "enum": ["dialog", "terminal"] },
+        "content": { "$ref": "#/$defs/content" },
+        "risk_signals": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/riskSignalCode" },
+          "description": "Признаки риска, присутствующие на шаге. Раскрываются пользователю только после выбора (FR16)."
+        },
+        "options": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/option" }
+        }
+      },
+      "allOf": [
+        {
+          "description": "Шаг диалога: ровно три варианта — по одному на каждое последствие.",
+          "if": { "properties": { "type": { "const": "dialog" } } },
+          "then": {
+            "required": ["options"],
+            "properties": {
+              "options": {
+                "minItems": 3,
+                "maxItems": 3,
+                "allOf": [
+                  {
+                    "contains": { "properties": { "outcome": { "const": "safe" } } },
+                    "minContains": 1,
+                    "maxContains": 1
+                  },
+                  {
+                    "contains": { "properties": { "outcome": { "const": "risky" } } },
+                    "minContains": 1,
+                    "maxContains": 1
+                  },
+                  {
+                    "contains": { "properties": { "outcome": { "const": "critical" } } },
+                    "minContains": 1,
+                    "maxContains": 1
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "description": "Терминальный шаг закрывает прохождение и вариантов не имеет.",
+          "if": { "properties": { "type": { "const": "terminal" } } },
+          "then": {
+            "not": { "required": ["options"] }
+          }
+        }
+      ]
+    }
+  }
+}

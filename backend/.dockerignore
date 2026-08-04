@@ -1,0 +1,10 @@
+.git
+.github
+*.md
+!seed/**/*.md
+coverage.out
+coverage.html
+.env
+.env.*
+Dockerfile
+.dockerignore

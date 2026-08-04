@@ -1,0 +1,90 @@
+# Конфигурация golangci-lint (MNT1), формат версии 2.
+#
+# Набор собран под три задачи: поймать дорогие ошибки Go (необработанные err,
+# утечки ресурсов), поддержать требования безопасности из анализа и удержать
+# единый стиль. Шумные на таком объёме линтеры (dupl, wsl, lll) не включены.
+
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # standard = errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  enable:
+    - gosec # хардкод секретов, слабые примитивы (SEC1, SEC4, SEC5)
+    - errorlint # сравнение ошибок без errors.Is
+    - bodyclose # незакрытые тела ответов
+    - rowserrcheck # необработанная ошибка rows
+    - sqlclosecheck # незакрытые rows
+    - noctx # запрос без контекста ломает graceful shutdown
+    - exhaustive # неполный switch по outcome/role/status
+    - revive
+    - gocritic
+    - misspell
+    - unconvert
+    - unparam
+    - prealloc
+    - goconst
+    - nolintlint # //nolint только с объяснением
+    - testifylint
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment # выравнивание полей ухудшает читаемость моделей
+
+    gosec:
+      excludes:
+        - G115 # шумит на int → int32 в конфигурации с заведомо малыми значениями
+
+    exhaustive:
+      default-signifies-exhaustive: true
+
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
+    gocritic:
+      enabled-tags: [diagnostic, style, performance]
+      disabled-checks:
+        - unnamedResult
+        # Доменные структуры намеренно передаются по значению.
+        - hugeParam
+        - rangeValCopy
+
+    revive:
+      rules:
+        - name: context-as-argument
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: indent-error-flow
+        - name: var-naming
+        - name: unreachable-code
+        - name: superfluous-else
+
+  exclusions:
+    generated: lax
+    presets: [comments, std-error-handling]
+    rules:
+      # В тестах допустимы магические строки и «небезопасные» фикстуры.
+      - path: _test\.go
+        linters: [gosec, goconst, unparam]
+      # Заглушки каркаса принимают параметры, которые пока не используют.
+      - path: internal/(repository|service)/
+        text: "unused-parameter|unparam"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/PaulLocust/Avito-Hackathon-Case-5

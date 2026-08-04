@@ -1,0 +1,1711 @@
+openapi: 3.0.3
+
+info:
+  title: Антискам тренажёр API
+  version: 1.0.0
+  description: |
+    REST API интерактивного тренажёра безопасных сделок (Кейс 5).
+
+    Спецификация — **единственный источник истины** контракта между фронтендом
+    и бэкендом (MNT4). Любое изменение поведения API начинается с изменения
+    этого файла, а не кода.
+
+    ## Соглашения
+
+    - Базовый префикс всех прикладных ресурсов — `/api/v1`.
+    - Тела запросов и ответов — `application/json; charset=utf-8`.
+    - Отметки времени — RFC 3339 в UTC (`2026-08-03T12:30:00Z`).
+    - Идентификаторы сессий — UUID v4. Сценарии, шаги, варианты и признаки
+      риска адресуются стабильными строковыми кодами, а не числовыми id.
+    - Любая ошибка возвращается в едином конверте (`Error`) с машинным кодом
+      из перечисления `ErrorCode`. Внутреннее устройство системы в ошибках не
+      раскрывается (SEC6).
+    - Все входные данные проверяются на сервере (SEC3): ограничения, описанные
+      в схемах, обязательны к реализации на бэкенде и не считаются выполненными
+      за счёт валидации на клиенте.
+
+    ## Аутентификация
+
+    JWT в заголовке `Authorization: Bearer <token>`. Токен выдаётся при
+    регистрации и входе (FR1, FR2).
+
+    Эндпоинты делятся на три группы:
+
+    | Группа | Поведение |
+    |---|---|
+    | Публичные | Токен не требуется: витрина сценариев, справочник (FR4) |
+    | С опциональным токеном | Работают без токена, но с ним ответ дополняется прогрессом пользователя |
+    | Защищённые | Без валидного токена — `401`; чужой ресурс — `404` (SEC2) |
+
+    Чужой ресурс отдаётся как `404 not_found`, а не `403`: факт существования
+    чужой сессии не раскрывается (SEC2).
+
+    ## Что API намеренно не отдаёт
+
+    До ответа на шаг клиент не получает `outcome`, вес и `feedback` вариантов,
+    а также перечень признаков риска шага. Иначе тренажёр перестаёт учить
+    распознаванию: правильный вариант вычисляется из ответа API. Эти данные
+    приходят в `AnswerResult` — после того, как выбор зафиксирован.
+
+  contact:
+    name: Команда Кейса 5
+    url: https://github.com/PaulLocust/Avito-Hackathon-Case-5
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Локальная разработка (docker compose)
+  - url: /
+    description: Тот же origin, что и фронтенд (nginx проксирует /api на бэкенд)
+
+tags:
+  - name: system
+    description: Служебные пробы состояния сервиса
+  - name: auth
+    description: Регистрация, вход, текущий пользователь (FR1–FR3)
+  - name: catalog
+    description: Витрина сценариев и выбор тренировки (FR4–FR7)
+  - name: training
+    description: Прохождение сценария и обучающая обратная связь (FR8–FR19)
+  - name: progress
+    description: Прогресс, история попыток и рекомендации (FR23–FR27)
+  - name: reference
+    description: Справочник признаков риска (FR28, FR29)
+
+paths:
+  # ────────────────────────────── system ──────────────────────────────
+  /healthz:
+    get:
+      tags: [system]
+      operationId: getLiveness
+      summary: Проба живости процесса
+      description: Отвечает `200`, пока процесс жив. Не проверяет БД.
+      security: []
+      responses:
+        "200":
+          description: Сервис жив
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /readyz:
+    get:
+      tags: [system]
+      operationId: getReadiness
+      summary: Проба готовности принимать трафик
+      description: |
+        Проверяет соединение с БД и применённость миграций. До успешного
+        ответа сервис не должен получать трафик (REL1).
+      security: []
+      responses:
+        "200":
+          description: Сервис готов
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: Сервис не готов
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  # ─────────────────────────────── auth ───────────────────────────────
+  /api/v1/auth/register:
+    post:
+      tags: [auth]
+      operationId: register
+      summary: Регистрация по нику и паролю
+      description: |
+        Создаёт учётную запись и сразу выдаёт токен доступа (FR1, прецедент 1).
+        Пароль хранится только как bcrypt-хеш (SEC1).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: Учётная запись создана, пользователь авторизован
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "409":
+          description: Ник занят (`nickname_taken`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: nickname_taken
+                  message: Пользователь с таким ником уже существует
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: Вход
+      description: |
+        Проверяет пару ник/пароль и выдаёт токен (FR2). Ответ не различает
+        «нет такого ника» и «неверный пароль» — обе ситуации дают
+        `invalid_credentials`, чтобы не позволять перебор существующих ников.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Успешный вход
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          description: Неверные ник или пароль (`invalid_credentials`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_credentials
+                  message: Неверный ник или пароль
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: Завершение сессии
+      description: |
+        Завершает сессию пользователя (FR2). Клиент обязан удалить токен
+        локально; сервер помечает токен отозванным.
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: Сессия завершена
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/auth/me:
+    get:
+      tags: [auth]
+      operationId: getCurrentUser
+      summary: Текущий пользователь
+      description: Используется фронтендом для восстановления сессии после перезагрузки страницы.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Данные текущего пользователя
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ───────────────────────────── catalog ──────────────────────────────
+  /api/v1/scenarios:
+    get:
+      tags: [catalog]
+      operationId: listScenarios
+      summary: Витрина сценариев
+      description: |
+        Возвращает сценарии, доступные для выбранной роли (FR5, FR6).
+        Набор небольшой и выводится целиком: фильтрации, поиска и пагинации нет.
+
+        Для авторизованного пользователя карточка дополняется полями прогресса:
+        `attempted`, `best_percent`, `best_level`, `last_attempt_at` (FR6, FR7).
+        Для гостя эти поля отсутствуют (FR4).
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - name: role
+          in: query
+          required: false
+          description: Роль пользователя. Без параметра возвращаются сценарии обеих ролей.
+          schema:
+            $ref: "#/components/schemas/Role"
+      responses:
+        "200":
+          description: Список сценариев
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScenarioListResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/scenarios/{scenarioCode}:
+    get:
+      tags: [catalog]
+      operationId: getScenario
+      summary: Карточка сценария перед стартом
+      description: |
+        Данные экрана подтверждения старта: описание ситуации, роль, сложность,
+        ожидаемое число шагов. Шаги и варианты ответа здесь не отдаются — они
+        приходят по одному в ходе прохождения.
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/ScenarioCode"
+      responses:
+        "200":
+          description: Карточка сценария
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScenarioDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/scenarios/{scenarioCode}/attempts:
+    get:
+      tags: [progress]
+      operationId: listScenarioAttempts
+      summary: История попыток по сценарию
+      description: |
+        Все завершённые попытки пользователя по сценарию, от новых к старым
+        (FR24). Выводится на экране результата.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ScenarioCode"
+      responses:
+        "200":
+          description: История попыток
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttemptListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ───────────────────────────── training ─────────────────────────────
+  /api/v1/sessions:
+    post:
+      tags: [training]
+      operationId: startSession
+      summary: Старт тренировки
+      description: |
+        Создаёт сессию прохождения и возвращает первый шаг (FR8).
+        Сессия жёстко связывается с текущей версией сценария (FR32):
+        последующая правка контента не меняет результат этой попытки.
+
+        Если по сценарию уже есть незавершённая сессия, возвращается
+        `409 session_already_active` с её идентификатором в `details.session_id`
+        — фронтенд предлагает продолжить или начать заново (прецедент 2, п. 6б).
+        Повторный запрос с `restart: true` помечает старую сессию прерванной и
+        создаёт новую (прецедент 8, п. 2а).
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartSessionRequest"
+      responses:
+        "201":
+          description: Сессия создана, отдан первый шаг
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionState"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: По сценарию есть незавершённая сессия (`session_already_active`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: session_already_active
+                  message: По этому сценарию есть незавершённая тренировка
+                  details:
+                    session_id: 3f1c9c1e-6f2a-4f7f-9a7b-6b5f2e2f1a11
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sessions/{sessionId}:
+    get:
+      tags: [training]
+      operationId: getSession
+      summary: Состояние сессии
+      description: |
+        Текущий шаг, позиция в сценарии и накопленный балл. Используется для
+        восстановления экрана прохождения после перезагрузки страницы и для
+        продолжения прерванной тренировки (FR12, REL2).
+
+        Чужая сессия отдаётся как `404` (SEC2).
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: Состояние сессии
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionState"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sessions/{sessionId}/answers:
+    post:
+      tags: [training]
+      operationId: submitAnswer
+      summary: Зафиксировать выбор на шаге
+      description: |
+        Фиксирует выбор пользователя, начисляет баллы и возвращает обучающую
+        обратную связь вместе со следующим шагом (FR10, FR11, FR15–FR17, FR20).
+
+        Ответ содержит всё, что нужно экрану прохождения, — повторный запрос
+        состояния сессии не требуется (USR3).
+
+        **Идемпотентность (FR13).** Если шаг уже отвечен, возвращается ранее
+        зафиксированный результат с `already_answered: true`; состояние сессии
+        не меняется и баллы повторно не начисляются. Это верно и в случае,
+        когда прислан другой `option_code`: изменить сделанный выбор нельзя.
+
+        **Терминальный шаг (FR14).** Если выбранный вариант ведёт в терминальный
+        шаг, сессия завершается: `session_finished: true`, `session.status`
+        становится `completed`, разбор доступен по `/sessions/{id}/result`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubmitAnswerRequest"
+      responses:
+        "200":
+          description: Выбор зафиксирован (или уже был зафиксирован ранее)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnswerResult"
+        "400":
+          description: |
+            Ошибка валидации. Возможные коды:
+            `validation_error` — тело запроса не соответствует схеме;
+            `step_not_current` — шаг не является текущим шагом сессии;
+            `option_not_found` — варианта с таким кодом нет на этом шаге
+            (прецедент 3, п. 4б).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: option_not_found
+                  message: Указанного варианта нет на этом шаге
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Сессия уже завершена или прервана (`session_finished`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: session_finished
+                  message: Тренировка уже завершена
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sessions/{sessionId}/result:
+    get:
+      tags: [training]
+      operationId: getSessionResult
+      summary: Итоговый разбор прохождения
+      description: |
+        Полный разбор завершённой сессии (прецедент 4): балл и уровень
+        безопасности (FR20, FR21), сравнение с предыдущей попыткой (FR23),
+        пошаговый разбор с безопасными альтернативами (FR18), карта
+        распознанных и пропущенных признаков риска, практические рекомендации
+        (FR19) и предложение следующего шага обучения (FR27).
+
+        Разбор воспроизводим: одна и та же последовательность выборов на одной
+        версии сценария всегда даёт один и тот же результат (FR22).
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: Разбор прохождения
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Сессия ещё не завершена (`session_not_finished`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: session_not_finished
+                  message: Тренировка ещё не завершена
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sessions/{sessionId}/abandon:
+    post:
+      tags: [training]
+      operationId: abandonSession
+      summary: Прервать тренировку
+      description: |
+        Помечает незавершённую сессию прерванной (`abandoned`). Используется,
+        когда пользователь выбирает «начать заново» (прецедент 8, п. 2а).
+        Прерванная сессия не участвует в прогрессе и не имеет разбора.
+        Операция идемпотентна: повторный вызов на уже прерванной сессии — `204`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "204":
+          description: Сессия прервана
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Сессия уже завершена, прервать нельзя (`session_finished`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ───────────────────────────── progress ─────────────────────────────
+  /api/v1/progress:
+    get:
+      tags: [progress]
+      operationId: getProgress
+      summary: Агрегированный прогресс пользователя
+      description: |
+        Данные верхней части главной страницы (FR25, FR27): сколько сценариев
+        пройдено из общего числа, лучший результат, предложение следующего шага
+        и незавершённая тренировка, если она есть (FR12, USR7).
+
+        Один запрос закрывает и блок продолжения, и строку прогресса — это
+        удерживает путь до первого шага в пределах трёх действий (USR1).
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Прогресс пользователя
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProgressResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/progress/signals:
+    get:
+      tags: [progress]
+      operationId: getSignalProgress
+      summary: Статистика по признакам риска
+      description: |
+        Какие признаки пользователь научился распознавать, а какие продолжает
+        пропускать (FR26, дополнительный функционал).
+
+        Признак считается пропущенным на шаге, если на шаге с этим признаком
+        выбран вариант с `outcome` `risky` или `critical`. Метрика независима
+        от балла: можно набрать 75% и стабильно проваливать один и тот же
+        признак.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Статистика по признакам риска
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignalProgressResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ──────────────────────────── reference ─────────────────────────────
+  /api/v1/risk-signals:
+    get:
+      tags: [reference]
+      operationId: listRiskSignals
+      summary: Справочник признаков риска
+      description: |
+        Признаки мошенничества с описанием и рекомендацией по безопасному
+        поведению (FR28). Доступен без авторизации (FR4).
+      security: []
+      parameters:
+        - name: side
+          in: query
+          required: false
+          description: Сторона сделки. Без параметра возвращаются признаки обеих сторон.
+          schema:
+            $ref: "#/components/schemas/Side"
+      responses:
+        "200":
+          description: Список признаков риска
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RiskSignalListResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/risk-signals/{signalCode}:
+    get:
+      tags: [reference]
+      operationId: getRiskSignal
+      summary: Карточка признака риска
+      description: |
+        Открывается по ссылке из разбора прохождения (FR29) и из справочника.
+        Дополнительно перечисляет сценарии, в которых признак отрабатывается
+        (прецедент 9, п. 5).
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/SignalCode"
+      responses:
+        "200":
+          description: Карточка признака риска
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RiskSignalDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT, выданный `/api/v1/auth/register` или `/api/v1/auth/login`.
+
+  parameters:
+    ScenarioCode:
+      name: scenarioCode
+      in: path
+      required: true
+      description: Стабильный код сценария.
+      schema:
+        $ref: "#/components/schemas/ScenarioCode"
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      description: Идентификатор сессии прохождения.
+      schema:
+        type: string
+        format: uuid
+      example: 3f1c9c1e-6f2a-4f7f-9a7b-6b5f2e2f1a11
+    SignalCode:
+      name: signalCode
+      in: path
+      required: true
+      description: Код признака риска из каталога.
+      schema:
+        $ref: "#/components/schemas/RiskSignalCode"
+
+  responses:
+    ValidationError:
+      description: Данные запроса не прошли проверку на сервере (`validation_error`, SEC3)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: validation_error
+              message: Проверьте правильность заполнения полей
+              details:
+                fields:
+                  nickname: Допустимы латинские буквы, цифры, дефис и подчёркивание
+    Unauthorized:
+      description: Требуется авторизация (`unauthorized`)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: unauthorized
+              message: Требуется вход в систему
+    NotFound:
+      description: |
+        Ресурс не найден (`not_found`). Тот же ответ отдаётся, если ресурс
+        существует, но принадлежит другому пользователю (SEC2).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: not_found
+              message: Ресурс не найден
+    InternalError:
+      description: |
+        Внутренняя ошибка (`internal_error`). Подробности не раскрываются;
+        для диагностики используется `request_id` из ответа и логов (SEC6, MNT6).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: internal_error
+              message: Внутренняя ошибка сервиса
+            request_id: 01J8XQ2M7K3ZC0P4B6R9V2T5
+
+  schemas:
+    # ─────────────────────────── примитивы ────────────────────────────
+    Role:
+      type: string
+      description: Роль пользователя в сделке.
+      enum: [buyer, seller]
+      example: buyer
+
+    Side:
+      type: string
+      description: Сторона сделки, для которой актуален признак риска.
+      enum: [buyer, seller]
+      example: buyer
+
+    Difficulty:
+      type: string
+      description: |
+        Уровень сложности сценария:
+        `basic` — базовые схемы, `advanced` — неочевидные признаки,
+        `demo` — короткий демонстрационный сценарий.
+      enum: [basic, advanced, demo]
+      example: basic
+
+    Outcome:
+      type: string
+      description: |
+        Последствие выбранного варианта:
+        `safe` — риск распознан, действие безопасно (+10);
+        `risky` — ошибки нет, но и защиты нет: диалог продолжен (0);
+        `critical` — действие, которое в реальности стоило бы денег или
+        аккаунта (−10).
+      enum: [safe, risky, critical]
+      example: safe
+
+    SecurityLevel:
+      type: string
+      description: |
+        Уровень безопасности по итогам прохождения (FR21):
+        `resilient` — 80–100%, `attentive` — 60–79%, `vulnerable` — 0–59%.
+        Границы задаются конфигурацией сервиса, а не константами в коде.
+      enum: [resilient, attentive, vulnerable]
+      example: resilient
+
+    SessionStatus:
+      type: string
+      description: |
+        Состояние сессии: `in_progress` — идёт, `completed` — завершена
+        и имеет разбор, `abandoned` — прервана пользователем, в прогрессе
+        не учитывается.
+      enum: [in_progress, completed, abandoned]
+      example: in_progress
+
+    StepType:
+      type: string
+      description: |
+        Тип шага: `dialog` — реплика контрагента с тремя вариантами действия,
+        `terminal` — закрывающий шаг без вариантов, завершающий сессию.
+      enum: [dialog, terminal]
+      example: dialog
+
+    MessageSender:
+      type: string
+      description: |
+        От чьего лица показан текст шага: `counterparty` — контрагент по сделке,
+        `platform` — имитация сообщения от платформы, `narrator` — описание
+        ситуации от тренажёра.
+      enum: [counterparty, platform, narrator]
+      example: counterparty
+
+    ScenarioCode:
+      type: string
+      description: Стабильный код сценария, не меняется между версиями.
+      pattern: "^[a-z0-9-]{3,64}$"
+      example: booking-link
+
+    StepCode:
+      type: string
+      description: Код шага, уникальный в пределах сценария.
+      pattern: "^[a-z0-9_-]{1,32}$"
+      example: s3
+
+    OptionCode:
+      type: string
+      description: Код варианта ответа, уникальный в пределах шага.
+      pattern: "^[a-z0-9_-]{1,32}$"
+      example: c
+
+    RiskSignalCode:
+      type: string
+      description: Код признака риска из каталога (раздел 4 анализа).
+      pattern: "^RISK_[A-Z_]{3,48}$"
+      example: RISK_PHISHING_LINK
+
+    Percent:
+      type: integer
+      description: Доля безопасных решений, 0–100 (FR21).
+      minimum: 0
+      maximum: 100
+      example: 83
+
+    # ──────────────────────────── ошибки ──────────────────────────────
+    ErrorCode:
+      type: string
+      description: |
+        Машинный код ошибки. Фронтенд принимает решения по коду, а не по
+        тексту `message` — тексты могут меняться.
+      enum:
+        - validation_error
+        - unauthorized
+        - invalid_credentials
+        - forbidden
+        - not_found
+        - nickname_taken
+        - session_already_active
+        - session_finished
+        - session_not_finished
+        - step_not_current
+        - option_not_found
+        - internal_error
+      example: validation_error
+
+    Error:
+      type: object
+      description: Единый конверт ошибки. Внутреннее устройство системы не раскрывается (SEC6).
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              $ref: "#/components/schemas/ErrorCode"
+            message:
+              type: string
+              description: Человекочитаемое сообщение на русском языке, пригодное для показа пользователю.
+              example: Проверьте правильность заполнения полей
+            details:
+              type: object
+              additionalProperties: true
+              description: |
+                Дополнительный контекст. Для `validation_error` — объект
+                `fields` с сообщениями по полям; для `session_already_active` —
+                `session_id` незавершённой сессии.
+        request_id:
+          type: string
+          description: Идентификатор запроса для сопоставления с логами (MNT6).
+          example: 01J8XQ2M7K3ZC0P4B6R9V2T5
+
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+          example: ok
+        version:
+          type: string
+          description: Версия сборки сервиса.
+          example: 1.0.0
+        checks:
+          type: object
+          additionalProperties:
+            type: string
+          description: Состояние отдельных зависимостей.
+          example:
+            database: ok
+
+    # ───────────────────────────── auth ───────────────────────────────
+    Nickname:
+      type: string
+      description: |
+        Уникальный ник. Латинские буквы, цифры, дефис и подчёркивание,
+        от 3 до 32 символов.
+      minLength: 3
+      maxLength: 32
+      pattern: "^[a-zA-Z0-9_-]+$"
+      example: safe_buyer
+
+    Password:
+      type: string
+      format: password
+      description: |
+        Пароль от 8 до 72 символов. Верхняя граница продиктована bcrypt:
+        байты сверх 72 отбрасываются алгоритмом, и такой пароль был бы усечён
+        молча. Хранится только хеш (SEC1), не логируется (SEC7).
+      minLength: 8
+      maxLength: 72
+      example: "correct-horse-42"
+
+    RegisterRequest:
+      type: object
+      required: [nickname, password]
+      properties:
+        nickname:
+          $ref: "#/components/schemas/Nickname"
+        password:
+          $ref: "#/components/schemas/Password"
+
+    LoginRequest:
+      type: object
+      required: [nickname, password]
+      properties:
+        nickname:
+          $ref: "#/components/schemas/Nickname"
+        password:
+          $ref: "#/components/schemas/Password"
+
+    User:
+      type: object
+      required: [id, nickname, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: 6f9619ff-8b86-d011-b42d-00cf4fc964ff
+        nickname:
+          $ref: "#/components/schemas/Nickname"
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-08-01T09:15:00Z"
+
+    AuthResponse:
+      type: object
+      required: [token, token_type, expires_at, user]
+      properties:
+        token:
+          type: string
+          description: JWT доступа.
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI2Zjk2MTlmZiJ9.signature
+        token_type:
+          type: string
+          enum: [Bearer]
+          example: Bearer
+        expires_at:
+          type: string
+          format: date-time
+          description: Момент истечения токена.
+          example: "2026-08-04T09:15:00Z"
+        user:
+          $ref: "#/components/schemas/User"
+
+    # ─────────────────────────── сценарии ─────────────────────────────
+    ScenarioRef:
+      type: object
+      description: Краткая ссылка на сценарий, встраиваемая в другие ответы.
+      required: [code, title, role, difficulty, version]
+      properties:
+        code:
+          $ref: "#/components/schemas/ScenarioCode"
+        title:
+          type: string
+          example: Бронь по ссылке
+        role:
+          $ref: "#/components/schemas/Role"
+        difficulty:
+          $ref: "#/components/schemas/Difficulty"
+        version:
+          type: integer
+          minimum: 1
+          description: Версия контента сценария (FR32).
+          example: 1
+
+    ScenarioCard:
+      allOf:
+        - $ref: "#/components/schemas/ScenarioRef"
+        - type: object
+          required: [description, steps_count]
+          properties:
+            description:
+              type: string
+              description: Краткое описание ситуации для карточки на витрине.
+              example: Продавец просит внести предоплату по ссылке, чтобы «снять объявление с публикации».
+            steps_count:
+              type: integer
+              minimum: 3
+              maximum: 8
+              description: |
+                Ожидаемое число шагов. Из-за ветвления фактическая длина пути
+                может отличаться на шаг; значение используется для индикатора
+                прогресса (USR2).
+              example: 6
+            risk_signal_codes:
+              type: array
+              description: Признаки риска, отрабатываемые сценарием.
+              items:
+                $ref: "#/components/schemas/RiskSignalCode"
+              example: [RISK_PHISHING_LINK, RISK_PREPAY_OUTSIDE, RISK_URGENCY_PRESSURE]
+            attempted:
+              type: boolean
+              description: Проходился ли сценарий ранее (FR6). Только для авторизованного пользователя.
+              example: true
+            best_percent:
+              allOf:
+                - $ref: "#/components/schemas/Percent"
+              nullable: true
+              description: Лучший результат пользователя по сценарию (FR7). `null`, если завершённых попыток нет.
+            best_level:
+              allOf:
+                - $ref: "#/components/schemas/SecurityLevel"
+              nullable: true
+              description: Уровень безопасности лучшей попытки.
+            attempts_count:
+              type: integer
+              minimum: 0
+              description: Число завершённых попыток пользователя по сценарию.
+              example: 2
+            last_attempt_at:
+              type: string
+              format: date-time
+              nullable: true
+              description: Дата последней завершённой попытки.
+              example: "2026-08-02T18:40:00Z"
+
+    ScenarioDetail:
+      allOf:
+        - $ref: "#/components/schemas/ScenarioCard"
+        - type: object
+          properties:
+            intro:
+              type: string
+              description: "Вводный текст экрана подтверждения старта: контекст сделки и что предстоит сделать."
+              example: Вы покупатель. Нашли нужный товар по адекватной цене и написали продавцу.
+            estimated_minutes:
+              type: integer
+              minimum: 1
+              description: Ориентировочное время прохождения в минутах.
+              example: 3
+            active_session_id:
+              type: string
+              format: uuid
+              nullable: true
+              description: Незавершённая сессия пользователя по этому сценарию, если она есть (FR12).
+
+    ScenarioListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScenarioCard"
+
+    # ───────────────────────── прохождение ────────────────────────────
+    StartSessionRequest:
+      type: object
+      required: [scenario_code]
+      properties:
+        scenario_code:
+          $ref: "#/components/schemas/ScenarioCode"
+        restart:
+          type: boolean
+          default: false
+          description: |
+            Начать заново, прервав незавершённую сессию по этому сценарию.
+            Без флага такая ситуация даёт `409 session_already_active`.
+
+    OptionView:
+      type: object
+      description: |
+        Вариант действия, каким его видит пользователь **до** выбора.
+        `outcome`, вес и `feedback` здесь отсутствуют намеренно: иначе
+        безопасный вариант вычисляется из ответа API, и тренажёр не учит.
+      required: [code, text]
+      properties:
+        code:
+          $ref: "#/components/schemas/OptionCode"
+        text:
+          type: string
+          description: Текст действия, которое совершит пользователь.
+          example: Предложить оформить через безопасную сделку
+
+    StepContent:
+      type: object
+      description: Содержимое шага — реплика контрагента и контекст ситуации.
+      required: [message]
+      properties:
+        message:
+          type: string
+          description: |
+            Основной текст шага. Ссылки и реквизиты внутри — имитация:
+            домены не существуют, кликабельными быть не должны (SEC8).
+          example: "Чтобы я снял объявление, внесите предоплату 2000 ₽ вот здесь: avito-dostavka-pay.ru"
+        sender:
+          $ref: "#/components/schemas/MessageSender"
+        context:
+          type: string
+          nullable: true
+          description: Пояснение обстановки, если реплики недостаточно.
+          example: Продавец отвечает через минуту после вашего вопроса о наличии.
+        attachment:
+          type: object
+          nullable: true
+          description: Имитация вложения в переписке (скриншот перевода, ссылка, фото документа).
+          required: [kind, caption]
+          properties:
+            kind:
+              type: string
+              enum: [link, screenshot, document]
+              example: link
+            caption:
+              type: string
+              example: avito-dostavka-pay.ru/booking/2213
+
+    StepView:
+      type: object
+      description: |
+        Шаг, каким его видит пользователь. Признаки риска шага здесь не
+        передаются — они раскрываются в обратной связи после выбора (FR16).
+      required: [code, type, position, content, options]
+      properties:
+        code:
+          $ref: "#/components/schemas/StepCode"
+        type:
+          $ref: "#/components/schemas/StepType"
+        position:
+          type: integer
+          minimum: 1
+          description: Порядковый номер шага на пройденном пути, с 1 (USR2).
+          example: 3
+        content:
+          $ref: "#/components/schemas/StepContent"
+        options:
+          type: array
+          description: |
+            Ровно три варианта для шага типа `dialog`; пустой массив для
+            терминального шага. Порядок вариантов задаётся контентом и не
+            коррелирует с их безопасностью.
+          maxItems: 3
+          items:
+            $ref: "#/components/schemas/OptionView"
+
+    SessionState:
+      type: object
+      description: Состояние сессии и текущий шаг — всё, что нужно экрану прохождения.
+      required:
+        [id, scenario, status, score, answers_count, steps_total, started_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: 3f1c9c1e-6f2a-4f7f-9a7b-6b5f2e2f1a11
+        scenario:
+          $ref: "#/components/schemas/ScenarioRef"
+        status:
+          $ref: "#/components/schemas/SessionStatus"
+        current_step:
+          allOf:
+            - $ref: "#/components/schemas/StepView"
+          nullable: true
+          description: Текущий шаг. `null`, если сессия завершена или прервана.
+        score:
+          type: integer
+          description: Накопленный балл — сумма весов сделанных выборов (FR20).
+          example: 20
+        answers_count:
+          type: integer
+          minimum: 0
+          description: Число зафиксированных выборов.
+          example: 2
+        steps_total:
+          type: integer
+          description: Ожидаемое число шагов сценария, для индикатора «шаг X из Y» (USR2).
+          example: 6
+        started_at:
+          type: string
+          format: date-time
+          example: "2026-08-03T12:00:00Z"
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+          example: null
+
+    SubmitAnswerRequest:
+      type: object
+      description: |
+        `step_code` передаётся явно и проверяется на сервере: это защищает от
+        рассинхронизации клиента с состоянием сессии (например, после
+        повторной отправки формы или кнопки «назад» в браузере).
+      required: [step_code, option_code]
+      properties:
+        step_code:
+          $ref: "#/components/schemas/StepCode"
+        option_code:
+          $ref: "#/components/schemas/OptionCode"
+
+    RiskSignalRef:
+      type: object
+      description: Ссылка на признак риска для перехода в справочник (FR29).
+      required: [code, title, side]
+      properties:
+        code:
+          $ref: "#/components/schemas/RiskSignalCode"
+        title:
+          type: string
+          example: Фишинговая ссылка
+        side:
+          $ref: "#/components/schemas/Side"
+
+    SafeAlternative:
+      type: object
+      description: |
+        Как следовало поступить. Приходит, когда выбран вариант с `outcome`
+        `risky` или `critical`; для безопасного выбора — `null` (USR4).
+      required: [option_code, text, feedback]
+      properties:
+        option_code:
+          $ref: "#/components/schemas/OptionCode"
+        text:
+          type: string
+          example: Предложить оформить через безопасную сделку
+        feedback:
+          type: string
+          example: Оплата остаётся внутри платформы, деньги переводятся продавцу только после получения товара.
+
+    AnswerResult:
+      type: object
+      description: |
+        Обучающая обратная связь и следующий шаг — один ответ на весь цикл
+        «выбрал → понял → пошёл дальше» (USR3).
+      required:
+        [
+          step_code,
+          option_code,
+          outcome,
+          score_delta,
+          feedback,
+          risk_signals,
+          already_answered,
+          session_finished,
+          session,
+        ]
+      properties:
+        step_code:
+          $ref: "#/components/schemas/StepCode"
+        option_code:
+          $ref: "#/components/schemas/OptionCode"
+        outcome:
+          $ref: "#/components/schemas/Outcome"
+        score_delta:
+          type: integer
+          description: "Вес выбранного варианта: `+10`, `0` или `−10` (FR20)."
+          enum: [10, 0, -10]
+          example: -10
+        feedback:
+          type: string
+          description: |
+            Объяснение по схеме «признак → причина → альтернатива» (USR4, FR15).
+            Формулировки «правильно» и «неправильно» контентом не используются.
+          example: >-
+            Домен только похож на официальный: настоящие страницы оплаты живут
+            на avito.ru. Оплата по ссылке из переписки не защищена — деньги
+            уходят напрямую мошеннику. Безопасный путь — кнопка оплаты внутри
+            объявления.
+        risk_signals:
+          type: array
+          description: Признаки риска, присутствовавшие на этом шаге (FR16).
+          items:
+            $ref: "#/components/schemas/RiskSignalRef"
+        safe_alternative:
+          allOf:
+            - $ref: "#/components/schemas/SafeAlternative"
+          nullable: true
+        already_answered:
+          type: boolean
+          description: |
+            `true`, если шаг был отвечен ранее и возвращён сохранённый
+            результат: состояние не изменилось, баллы не начислены (FR13).
+          example: false
+        session_finished:
+          type: boolean
+          description: Сессия завершена достижением терминального шага (FR14).
+          example: false
+        session:
+          allOf:
+            - $ref: "#/components/schemas/SessionState"
+          description: Состояние сессии после фиксации выбора, с уже подставленным следующим шагом.
+
+    # ───────────────────────── результат ──────────────────────────────
+    ScoreSummary:
+      type: object
+      description: |
+        Оценка прохождения. `percent` нормируется от числа фактически сделанных
+        выборов: `percent = (score − min) × 100 / (max − min)`, где
+        `max = 10n`, `min = −10n`. Нормировка не зависит от структуры графа,
+        поэтому ветки разной длины сопоставимы между собой (FR20–FR22).
+      required: [score, min_score, max_score, percent, level, answers_count]
+      properties:
+        score:
+          type: integer
+          description: Сумма весов выбранных вариантов.
+          example: 30
+        min_score:
+          type: integer
+          description: Минимально возможный балл при этом числе выборов (−10n).
+          example: -60
+        max_score:
+          type: integer
+          description: Максимально возможный балл при этом числе выборов (+10n).
+          example: 60
+        percent:
+          $ref: "#/components/schemas/Percent"
+        level:
+          $ref: "#/components/schemas/SecurityLevel"
+        answers_count:
+          type: integer
+          minimum: 0
+          example: 6
+
+    AttemptComparison:
+      type: object
+      description: |
+        Сравнение с предыдущей попыткой по этому же сценарию (FR23).
+        Отсутствует (`null`), если попытка первая.
+      required: [previous_percent, previous_score, delta_percent, previous_finished_at]
+      properties:
+        previous_percent:
+          $ref: "#/components/schemas/Percent"
+        previous_score:
+          type: integer
+          example: 10
+        delta_percent:
+          type: integer
+          description: Разница текущего и предыдущего результата в процентных пунктах; может быть отрицательной.
+          example: 34
+        previous_finished_at:
+          type: string
+          format: date-time
+          example: "2026-08-02T18:40:00Z"
+
+    BreakdownItem:
+      type: object
+      description: Один шаг пошагового разбора (FR18, прецедент 5).
+      required: [order, step_code, situation, chosen, risk_signals]
+      properties:
+        order:
+          type: integer
+          minimum: 1
+          example: 3
+        step_code:
+          $ref: "#/components/schemas/StepCode"
+        situation:
+          type: string
+          description: Реплика или обстановка шага, чтобы разбор читался без возврата к прохождению.
+          example: "Чтобы я снял объявление, внесите предоплату 2000 ₽ вот здесь: avito-dostavka-pay.ru"
+        chosen:
+          type: object
+          required: [option_code, text, outcome, score_delta, feedback]
+          properties:
+            option_code:
+              $ref: "#/components/schemas/OptionCode"
+            text:
+              type: string
+              example: Перейти по ссылке и оплатить
+            outcome:
+              $ref: "#/components/schemas/Outcome"
+            score_delta:
+              type: integer
+              enum: [10, 0, -10]
+              example: -10
+            feedback:
+              type: string
+              example: "Домен только похож на официальный: настоящие страницы оплаты живут на avito.ru."
+        safe_alternative:
+          allOf:
+            - $ref: "#/components/schemas/SafeAlternative"
+          nullable: true
+        risk_signals:
+          type: array
+          items:
+            $ref: "#/components/schemas/RiskSignalRef"
+
+    SessionSignalOutcome:
+      type: object
+      description: |
+        Итог по признаку риска в рамках одного прохождения: распознан ли он.
+        Признак считается распознанным, если на всех шагах с этим признаком
+        выбран безопасный вариант.
+      required: [code, title, side, recognized, steps_total, steps_recognized]
+      properties:
+        code:
+          $ref: "#/components/schemas/RiskSignalCode"
+        title:
+          type: string
+          example: Фишинговая ссылка
+        side:
+          $ref: "#/components/schemas/Side"
+        recognized:
+          type: boolean
+          example: false
+        steps_total:
+          type: integer
+          minimum: 1
+          description: Сколько шагов сценария были размечены этим признаком.
+          example: 2
+        steps_recognized:
+          type: integer
+          minimum: 0
+          description: На скольких из них выбран безопасный вариант.
+          example: 1
+
+    NextStepSuggestion:
+      type: object
+      description: |
+        Предложение следующего шага обучения (FR27): непройденный сценарий или
+        повторное прохождение сценария со слабым результатом.
+      required: [type, reason]
+      properties:
+        type:
+          type: string
+          enum: [new_scenario, retry_scenario, explore_signals, all_done]
+          example: retry_scenario
+        scenario:
+          allOf:
+            - $ref: "#/components/schemas/ScenarioRef"
+          nullable: true
+          description: Сценарий-цель. `null` для `explore_signals` и `all_done`.
+        reason:
+          type: string
+          description: Короткое объяснение, почему предложен именно этот шаг.
+          example: В прошлый раз здесь был уровень «уязвим» — попробуйте пройти ещё раз.
+
+    SessionResult:
+      type: object
+      description: Экран результата целиком (прецедент 4).
+      required:
+        [session_id, scenario, score, breakdown, signals, recommendations, next_step, started_at, finished_at]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+          example: 3f1c9c1e-6f2a-4f7f-9a7b-6b5f2e2f1a11
+        scenario:
+          $ref: "#/components/schemas/ScenarioRef"
+        score:
+          $ref: "#/components/schemas/ScoreSummary"
+        comparison:
+          allOf:
+            - $ref: "#/components/schemas/AttemptComparison"
+          nullable: true
+        breakdown:
+          type: array
+          description: Шаги в порядке прохождения (FR18).
+          items:
+            $ref: "#/components/schemas/BreakdownItem"
+        signals:
+          type: array
+          description: Признаки риска сценария с отметкой, распознал их пользователь или пропустил.
+          items:
+            $ref: "#/components/schemas/SessionSignalOutcome"
+        recommendations:
+          type: array
+          description: Практические рекомендации, применимые к реальной сделке (FR19).
+          items:
+            type: string
+          example:
+            - Оплачивайте только внутри платформы — ссылки из переписки не защищены.
+            - Просьба уйти в мессенджер — сама по себе признак риска, независимо от объяснения.
+        next_step:
+          $ref: "#/components/schemas/NextStepSuggestion"
+        started_at:
+          type: string
+          format: date-time
+          example: "2026-08-03T12:00:00Z"
+        finished_at:
+          type: string
+          format: date-time
+          example: "2026-08-03T12:04:30Z"
+        duration_seconds:
+          type: integer
+          minimum: 0
+          example: 270
+
+    # ────────────────────────── прогресс ──────────────────────────────
+    Attempt:
+      type: object
+      description: Завершённая попытка в истории (FR24).
+      required: [session_id, scenario_code, scenario_version, score, percent, level, finished_at]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        scenario_code:
+          $ref: "#/components/schemas/ScenarioCode"
+        scenario_version:
+          type: integer
+          minimum: 1
+          description: Версия сценария, на которой проходилась попытка (FR32).
+          example: 1
+        score:
+          type: integer
+          example: 30
+        percent:
+          $ref: "#/components/schemas/Percent"
+        level:
+          $ref: "#/components/schemas/SecurityLevel"
+        finished_at:
+          type: string
+          format: date-time
+          example: "2026-08-03T12:04:30Z"
+
+    AttemptListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          description: Попытки от новых к старым.
+          items:
+            $ref: "#/components/schemas/Attempt"
+
+    ProgressResponse:
+      type: object
+      description: Верхняя часть главной страницы (FR25, FR27, FR12).
+      required:
+        [completed_scenarios, total_scenarios, attempts_count, next_step]
+      properties:
+        completed_scenarios:
+          type: integer
+          minimum: 0
+          description: Сколько сценариев пройдено хотя бы раз.
+          example: 3
+        total_scenarios:
+          type: integer
+          minimum: 0
+          description: Всего доступных сценариев.
+          example: 5
+        attempts_count:
+          type: integer
+          minimum: 0
+          description: Всего завершённых попыток.
+          example: 7
+        best_percent:
+          allOf:
+            - $ref: "#/components/schemas/Percent"
+          nullable: true
+          description: Лучший результат среди всех попыток. `null`, если попыток не было.
+        best_level:
+          allOf:
+            - $ref: "#/components/schemas/SecurityLevel"
+          nullable: true
+        average_percent:
+          allOf:
+            - $ref: "#/components/schemas/Percent"
+          nullable: true
+          description: Средний результат по завершённым попыткам.
+        last_delta_percent:
+          type: integer
+          nullable: true
+          description: |
+            Изменение результата в последней попытке относительно предыдущей
+            по тому же сценарию, в процентных пунктах. Динамика показывается
+            сравнением с предыдущей попыткой, а не временным рядом.
+          example: 34
+        active_session:
+          allOf:
+            - $ref: "#/components/schemas/ActiveSession"
+          nullable: true
+          description: Незавершённая тренировка для блока «продолжить» (FR12, USR7).
+        next_step:
+          $ref: "#/components/schemas/NextStepSuggestion"
+
+    ActiveSession:
+      type: object
+      description: Краткие данные незавершённой сессии для блока продолжения на главной.
+      required: [session_id, scenario, answers_count, steps_total, started_at]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        scenario:
+          $ref: "#/components/schemas/ScenarioRef"
+        answers_count:
+          type: integer
+          minimum: 0
+          example: 2
+        steps_total:
+          type: integer
+          example: 6
+        started_at:
+          type: string
+          format: date-time
+          example: "2026-08-03T12:00:00Z"
+
+    SignalProgressItem:
+      type: object
+      description: Строка статистики по признаку риска (FR26).
+      required: [code, title, side, encountered, recognized, missed, status]
+      properties:
+        code:
+          $ref: "#/components/schemas/RiskSignalCode"
+        title:
+          type: string
+          example: Запрос кода из SMS
+        side:
+          $ref: "#/components/schemas/Side"
+        encountered:
+          type: integer
+          minimum: 0
+          description: Сколько раз признак встречался пользователю на шагах завершённых сессий.
+          example: 4
+        recognized:
+          type: integer
+          minimum: 0
+          description: Сколько раз на таком шаге выбран безопасный вариант.
+          example: 1
+        missed:
+          type: integer
+          minimum: 0
+          description: Сколько раз выбран `risky` или `critical`.
+          example: 3
+        status:
+          type: string
+          description: |
+            Сводная оценка: `mastered` — распознаётся уверенно,
+            `weak` — регулярно пропускается, `unknown` — ещё не встречался.
+          enum: [mastered, weak, unknown]
+          example: weak
+
+    SignalProgressResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SignalProgressItem"
+
+    # ───────────────────────── справочник ─────────────────────────────
+    RiskSignal:
+      type: object
+      description: Признак риска в справочнике (FR28).
+      required: [code, side, title, summary, description, how_to_act]
+      properties:
+        code:
+          $ref: "#/components/schemas/RiskSignalCode"
+        side:
+          $ref: "#/components/schemas/Side"
+        title:
+          type: string
+          example: Фишинговая ссылка
+        summary:
+          type: string
+          description: Одна строка сути для списка.
+          example: Ссылка на поддельную страницу «безопасной оплаты» или «доставки».
+        description:
+          type: string
+          description: Как схема выглядит в переписке и почему работает.
+          example: Мошенник присылает адрес, похожий на официальный, — отличается один символ или добавлено слово.
+        how_to_recognize:
+          type: array
+          description: Наблюдаемые маркеры, по которым признак опознаётся.
+          items:
+            type: string
+          example:
+            - Домен отличается от avito.ru приставкой или дефисом.
+            - Страница просит ввести данные карты для «получения» денег.
+        how_to_act:
+          type: string
+          description: Рекомендация по безопасному поведению.
+          example: Не переходите по ссылкам из переписки. Оплата и доставка оформляются кнопками внутри объявления.
+
+    RiskSignalDetail:
+      allOf:
+        - $ref: "#/components/schemas/RiskSignal"
+        - type: object
+          properties:
+            related_scenarios:
+              type: array
+              description: Сценарии, в которых признак отрабатывается (прецедент 9, п. 5).
+              items:
+                $ref: "#/components/schemas/ScenarioRef"
+
+    RiskSignalListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RiskSignal"

@@ -1,0 +1,75 @@
+# docker compose up поднимает приложение целиком (REL1).
+# Значения по умолчанию рассчитаны на локальный запуск; для деплоя
+# переопределите их через .env (см. .env.example).
+
+name: antiscam-trainer
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: antiscam-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-antiscam}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-antiscam-local-password}
+      POSTGRES_DB: ${POSTGRES_DB:-antiscam}
+    ports:
+      - "${POSTGRES_EXPOSED_PORT:-5432}:5432"
+    volumes:
+      # Данные переживают перезапуск: незавершённая тренировка остаётся
+      # доступной (REL2).
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-antiscam} -d ${POSTGRES_DB:-antiscam}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      args:
+        VERSION: ${APP_VERSION:-dev}
+    container_name: antiscam-backend
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      HTTP_PORT: 8080
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-antiscam}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-antiscam-local-password}
+      POSTGRES_DB: ${POSTGRES_DB:-antiscam}
+      POSTGRES_SSLMODE: disable
+      # Годится только для локальной разработки: в деплое JWT_SECRET задаётся
+      # окружением и в репозиторий не попадает (SEC5).
+      JWT_SECRET: ${JWT_SECRET:-local-development-secret-change-me}
+      JWT_TTL: ${JWT_TTL:-24h}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:3000}
+      SCORING_THRESHOLD_RESILIENT: ${SCORING_THRESHOLD_RESILIENT:-80}
+      SCORING_THRESHOLD_ATTENTIVE: ${SCORING_THRESHOLD_ATTENTIVE:-60}
+      SEED_DIR: /app/seed
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Порядок: миграции и контент, затем API.
+    command: ["/bin/sh", "-c", "/app/seeder && exec /app/api"]
+    restart: unless-stopped
+
+  # M6 включает сервис, когда во frontend/ появится Dockerfile.
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #   container_name: antiscam-frontend
+  #   ports:
+  #     - "${FRONTEND_PORT:-3000}:80"
+  #   depends_on:
+  #     - backend
+  #   restart: unless-stopped
+
+volumes:
+  postgres-data:

@@ -1,32 +1,50 @@
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
-# Binaries for programs and plugins
+# ─────────────────────────────────── Go ────────────────────────────────
+# Бинарники
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
+/backend/api
+/backend/seeder
 
-# Test binary, built with `go test -c`
+# Тестовые бинарники и артефакты покрытия
 *.test
-
-# Code coverage profiles and other test artifacts
 *.out
 coverage.*
 *.coverprofile
 profile.cov
 
-# Dependency directories (remove the comment below to include it)
+# Каталог зависимостей (раскомментируйте, если решите вендорить)
 # vendor/
 
-# Go workspace file
+# Go workspace
 go.work
 go.work.sum
 
-# env file
-.env
+# ──────────────────────────────── Node ─────────────────────────────────
+node_modules/
+dist/
+build/
+.vite/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
-# Editor/IDE
-# .idea/
-# .vscode/
+# Типы, сгенерированные из OpenAPI: генерируются командой make api-types.
+# Правило снимается, если команда решит коммитить их для стабильности сборки.
+/frontend/src/api/schema.ts
+
+# ────────────────────────────── Окружение ──────────────────────────────
+# Секреты в репозиторий не попадают (SEC5). Пример — в .env.example.
+.env
+.env.*
+!.env.example
+
+# ─────────────────────────── Редакторы и ОС ────────────────────────────
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
