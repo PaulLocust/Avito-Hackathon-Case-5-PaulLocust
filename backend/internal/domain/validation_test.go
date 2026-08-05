@@ -144,8 +144,6 @@ func TestValidateScenario(t *testing.T) {
 }
 
 func TestResolveNext(t *testing.T) {
-	t.Skip("TODO(M2): снять после реализации domain.ResolveNext")
-
 	step := validScenario().Steps[0]
 
 	t.Run("вариант найден", func(t *testing.T) {

@@ -5,13 +5,13 @@ package domain
 
 // ResolveNext возвращает выбранный вариант и код следующего шага.
 // Если варианта нет на шаге — ErrOptionNotFound.
-//
-// TODO(M2): реализовать.
 func ResolveNext(step Step, optionCode string) (Option, string, error) {
-	_ = step
-	_ = optionCode
+	option, ok := step.FindOption(optionCode)
+	if !ok {
+		return Option{}, "", ErrOptionNotFound
+	}
 
-	return Option{}, "", ErrNotImplemented
+	return option, option.NextStepCode, nil
 }
 
 func IsTerminal(step Step) bool { return step.Type == StepTypeTerminal }

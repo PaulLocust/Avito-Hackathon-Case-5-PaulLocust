@@ -22,33 +22,92 @@ type Thresholds struct {
 // ветвлении ветки разной длины, и лучший путь был бы неоднозначен.
 // Округление арифметическое: 110/120 даёт 92%, как в примерах анализа.
 // Пустой список ответов возвращает нулевой Result.
-//
-// TODO(M3): реализовать, тесты — в scoring_test.go.
 func Evaluate(answers []Answer, thresholds Thresholds) Result {
-	_ = answers
-	_ = thresholds
+	n := len(answers)
+	if n == 0 {
+		return Result{}
+	}
 
-	return Result{}
+	score := 0
+	for _, answer := range answers {
+		score += answer.ScoreDelta
+	}
+
+	minScore, maxScore := -10*n, 10*n
+	percent := roundPercent((score-minScore)*100, maxScore-minScore)
+
+	return Result{
+		Score:        score,
+		MinScore:     minScore,
+		MaxScore:     maxScore,
+		Percent:      percent,
+		Level:        LevelFor(percent, thresholds),
+		AnswersCount: n,
+	}
+}
+
+// roundPercent округляет num/denom арифметически (половина — вверх).
+// 4000/60 = 66,67 → 67, 11000/120 = 91,67 → 92, как в разделе 9 анализа.
+func roundPercent(num, denom int) int {
+	return (2*num + denom) / (2 * denom)
 }
 
 // LevelFor: >= Resilient — «устойчив», >= Attentive — «внимателен», иначе
 // «уязвим».
-//
-// TODO(M3): реализовать.
 func LevelFor(percent int, thresholds Thresholds) SecurityLevel {
-	_ = percent
-	_ = thresholds
+	if percent >= thresholds.Resilient {
+		return LevelResilient
+	}
+
+	if percent >= thresholds.Attentive {
+		return LevelAttentive
+	}
 
 	return LevelVulnerable
 }
 
 // RecognizedSignals раскладывает признаки риска на распознанные и
 // пропущенные. Признак распознан, если на всех шагах с ним выбран safe.
-//
-// TODO(M3): реализовать, используется в разборе (FR18) и статистике (FR26).
+// Признаки, не встретившиеся в ответах, в результат не попадают.
 func RecognizedSignals(answers []Answer, signals []RiskSignal) []SignalOutcome {
-	_ = answers
-	_ = signals
+	outcomes := make([]SignalOutcome, 0, len(signals))
 
-	return nil
+	for _, signal := range signals {
+		total, recognized := 0, 0
+
+		for _, answer := range answers {
+			if !contains(answer.RiskSignalCodes, signal.Code) {
+				continue
+			}
+
+			total++
+
+			if answer.Outcome == OutcomeSafe {
+				recognized++
+			}
+		}
+
+		if total == 0 {
+			continue
+		}
+
+		outcomes = append(outcomes, SignalOutcome{
+			Signal:          signal,
+			Recognized:      recognized == total,
+			StepsTotal:      total,
+			StepsRecognized: recognized,
+		})
+	}
+
+	return outcomes
+}
+
+func contains(codes []string, code string) bool {
+	for _, candidate := range codes {
+		if candidate == code {
+			return true
+		}
+	}
+
+	return false
 }
