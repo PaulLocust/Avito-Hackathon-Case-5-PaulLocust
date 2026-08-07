@@ -75,7 +75,7 @@ func (s *catalogService) Get(
 	card := s.card(scenario, stats)
 
 	if userID != nil {
-		active, err := s.sessions.GetActiveByUserScenario(ctx, *userID, code)
+		active, err := s.sessions.GetActiveByOwnerScenario(ctx, domain.UserOwner(*userID), code)
 
 		switch {
 		case err == nil:

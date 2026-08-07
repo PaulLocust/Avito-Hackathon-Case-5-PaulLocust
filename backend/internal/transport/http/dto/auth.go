@@ -9,6 +9,13 @@ import (
 	"github.com/PaulLocust/Avito-Hackathon-Case-5/backend/internal/service"
 )
 
+// internal/transport/http/dto/auth.go
+
+type CredentialsRequest struct {
+	Nickname string `json:"nickname"`
+	Password string `json:"password"`
+}
+
 // Ограничения повторяют схемы из OpenAPI. Верхняя граница пароля продиктована
 // bcrypt: байты сверх 72 алгоритм отбрасывает молча.
 const (
@@ -23,6 +30,22 @@ var nicknamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 type RegisterRequest struct {
 	Nickname string `json:"nickname"`
 	Password string `json:"password"`
+}
+
+func (r CredentialsRequest) Validate() error {
+	ve := &domain.ValidationError{}
+
+	if len(r.Nickname) < 3 || len(r.Nickname) > 32 {
+		ve.Add("nickname", "должен быть от 3 до 32 символов")
+	}
+	if len(r.Password) < 8 {
+		ve.Add("password", "должен быть не короче 8 символов")
+	}
+
+	if ve.Empty() {
+		return nil
+	}
+	return ve
 }
 
 func (r RegisterRequest) Validate() error {

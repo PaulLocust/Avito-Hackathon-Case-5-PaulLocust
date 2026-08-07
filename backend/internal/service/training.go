@@ -28,7 +28,7 @@ var _ TrainingService = (*trainingService)(nil)
 // её и начать заново.
 func (s *trainingService) Start(
 	ctx context.Context,
-	userID uuid.UUID,
+	owner domain.Owner,
 	scenarioCode string,
 	restart bool,
 ) (domain.SessionSnapshot, error) {
@@ -37,7 +37,7 @@ func (s *trainingService) Start(
 		return domain.SessionSnapshot{}, err
 	}
 
-	if ensureErr := s.ensureNoActiveSession(ctx, userID, scenarioCode, restart); ensureErr != nil {
+	if ensureErr := s.ensureNoActiveSession(ctx, owner, scenarioCode, restart); ensureErr != nil {
 		return domain.SessionSnapshot{}, ensureErr
 	}
 
@@ -47,7 +47,7 @@ func (s *trainingService) Start(
 	}
 
 	session := domain.Session{
-		UserID:          userID,
+		Owner:           owner,
 		ScenarioID:      scenario.ID,
 		ScenarioCode:    scenario.Code,
 		ScenarioVersion: scenario.Version,
@@ -65,13 +65,8 @@ func (s *trainingService) Start(
 
 // ensureNoActiveSession проверяет незавершённую сессию по сценарию: без
 // restart она — ошибка, с restart прерывается.
-func (s *trainingService) ensureNoActiveSession(
-	ctx context.Context,
-	userID uuid.UUID,
-	scenarioCode string,
-	restart bool,
-) error {
-	active, err := s.sessions.GetActiveByUserScenario(ctx, userID, scenarioCode)
+func (s *trainingService) ensureNoActiveSession(ctx context.Context, owner domain.Owner, scenarioCode string, restart bool) error {
+	active, err := s.sessions.GetActiveByOwnerScenario(ctx, owner, scenarioCode)
 	if errors.Is(err, domain.ErrNotFound) {
 		return nil
 	}
@@ -94,13 +89,13 @@ func (s *trainingService) ensureNoActiveSession(
 
 // Get отдаёт состояние сессии владельцу; чужая сессия — domain.ErrNotFound,
 // чтобы не раскрывать факт её существования (SEC2).
-func (s *trainingService) Get(ctx context.Context, userID, sessionID uuid.UUID) (domain.SessionSnapshot, error) {
+func (s *trainingService) Get(ctx context.Context, owner domain.Owner, sessionID uuid.UUID) (domain.SessionSnapshot, error) {
 	session, err := s.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return domain.SessionSnapshot{}, err
 	}
 
-	if session.UserID != userID {
+	if session.Owner != owner {
 		return domain.SessionSnapshot{}, domain.ErrNotFound
 	}
 
@@ -118,7 +113,8 @@ func (s *trainingService) Get(ctx context.Context, userID, sessionID uuid.UUID) 
 // сохранённый результат без изменения состояния (FR13).
 func (s *trainingService) SubmitAnswer(
 	ctx context.Context,
-	userID, sessionID uuid.UUID,
+	owner domain.Owner,
+	sessionID uuid.UUID,
 	stepCode, optionCode string,
 ) (domain.AnswerOutcome, error) {
 	session, err := s.sessions.Get(ctx, sessionID)
@@ -126,7 +122,7 @@ func (s *trainingService) SubmitAnswer(
 		return domain.AnswerOutcome{}, err
 	}
 
-	if session.UserID != userID {
+	if session.Owner != owner {
 		return domain.AnswerOutcome{}, domain.ErrNotFound
 	}
 
@@ -220,13 +216,13 @@ func (s *trainingService) SubmitAnswer(
 
 // Abandon прерывает незавершённую сессию. Завершённую прерывать нельзя —
 // domain.ErrSessionFinished; повторный вызов прерванной безвреден.
-func (s *trainingService) Abandon(ctx context.Context, userID, sessionID uuid.UUID) error {
+func (s *trainingService) Abandon(ctx context.Context, owner domain.Owner, sessionID uuid.UUID) error {
 	session, err := s.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return err
 	}
 
-	if session.UserID != userID {
+	if session.Owner != owner {
 		return domain.ErrNotFound
 	}
 
@@ -244,13 +240,13 @@ func (s *trainingService) Abandon(ctx context.Context, userID, sessionID uuid.UU
 
 // Result собирает экран разбора: оценка, пошаговый разбор, карта признаков,
 // сравнение с предыдущей попыткой, рекомендации и следующий шаг (FR18–FR27).
-func (s *trainingService) Result(ctx context.Context, userID, sessionID uuid.UUID) (domain.Debrief, error) {
+func (s *trainingService) Result(ctx context.Context, owner domain.Owner, sessionID uuid.UUID) (domain.Debrief, error) {
 	session, err := s.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return domain.Debrief{}, err
 	}
 
-	if session.UserID != userID {
+	if session.Owner != owner {
 		return domain.Debrief{}, domain.ErrNotFound
 	}
 
@@ -287,7 +283,7 @@ func (s *trainingService) Result(ctx context.Context, userID, sessionID uuid.UUI
 		return domain.Debrief{}, buildErr
 	}
 
-	next, err := s.suggestNextStep(ctx, userID, scenario, debrief.Result)
+	next, err := s.suggestNextStep(ctx, owner, scenario, debrief.Result)
 	if err != nil {
 		return domain.Debrief{}, err
 	}
@@ -583,11 +579,8 @@ func (s *trainingService) buildRecommendations(
 
 // buildComparison — сравнение с предыдущей завершённой попыткой (FR23).
 // Первой попытке сравнение не нужно.
-func (s *trainingService) buildComparison(
-	ctx context.Context,
-	debrief *domain.Debrief,
-) error {
-	previous, err := s.sessions.PreviousCompleted(ctx, debrief.Session.UserID, debrief.Scenario.Code, debrief.Session.ID)
+func (s *trainingService) buildComparison(ctx context.Context, debrief *domain.Debrief) error {
+	previous, err := s.sessions.PreviousCompleted(ctx, debrief.Session.Owner, debrief.Scenario.Code, debrief.Session.ID)
 	if errors.Is(err, domain.ErrNotFound) {
 		return nil
 	}
@@ -618,7 +611,7 @@ func (s *trainingService) buildComparison(
 // или повторное прохождение при слабом результате.
 func (s *trainingService) suggestNextStep(
 	ctx context.Context,
-	userID uuid.UUID,
+	owner domain.Owner,
 	scenario domain.Scenario,
 	result domain.Result,
 ) (domain.NextStep, error) {
@@ -632,7 +625,7 @@ func (s *trainingService) suggestNextStep(
 			continue
 		}
 
-		completed, err := s.sessions.ListCompleted(ctx, userID, candidate.Code)
+		completed, err := s.sessions.ListCompleted(ctx, owner, candidate.Code)
 		if err != nil {
 			return domain.NextStep{}, fmt.Errorf("история сценария %s: %w", candidate.Code, err)
 		}

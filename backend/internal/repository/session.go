@@ -20,35 +20,67 @@ type sessionRepository struct {
 
 var _ SessionRepository = (*sessionRepository)(nil)
 
-// uniqueViolation — код SQLSTATE класса 23 (нарушение целостности).
 const uniqueViolation = "23505"
 
-// sessionColumns — колонки строки sessions для SELECT и RETURNING.
-const sessionColumns = `id, user_id, scenario_id, scenario_code, scenario_version,
+// sessionColumns — колонки строки sessions. Владелец хранится как две
+// nullable-колонки: ровно одна заполнена (CHECK на уровне схемы).
+const sessionColumns = `id, user_id, guest_session_id, scenario_id, scenario_code, scenario_version,
 	status, current_step_code, score, started_at, finished_at`
 
-// Create сохраняет сессию. Нарушение sessions_single_active_idx — у клиента
-// уже есть незавершённая сессия по сценарию: возвращаем её идентификатор,
-// чтобы клиент предложил продолжить (FR12).
+// ownerColumns разворачивает Owner в пару значений для INSERT.
+func ownerColumns(owner domain.Owner) (userID, guestSessionID *uuid.UUID) {
+	id := owner.ID
+	switch owner.Kind {
+	case domain.OwnerUser:
+		return &id, nil
+	case domain.OwnerGuest:
+		return nil, &id
+	default:
+		return nil, nil
+	}
+}
+
+// ownerFromColumns — обратное преобразование при чтении строки.
+func ownerFromColumns(userID, guestSessionID *uuid.UUID) domain.Owner {
+	if userID != nil {
+		return domain.UserOwner(*userID)
+	}
+	if guestSessionID != nil {
+		return domain.GuestOwner(*guestSessionID)
+	}
+	return domain.Owner{}
+}
+
+// ownerWhere — условие WHERE по владельцу и позиционный аргумент начиная
+// с индекса argPos.
+func ownerWhere(owner domain.Owner, argPos int) (string, uuid.UUID) {
+	if owner.Kind == domain.OwnerGuest {
+		return fmt.Sprintf("guest_session_id = $%d", argPos), owner.ID
+	}
+	return fmt.Sprintf("user_id = $%d", argPos), owner.ID
+}
+
 func (r *sessionRepository) Create(ctx context.Context, session domain.Session) (domain.Session, error) {
 	if session.ID == uuid.Nil {
 		session.ID = uuid.New()
 	}
 
+	userID, guestSessionID := ownerColumns(session.Owner)
+
 	query := `
-		INSERT INTO sessions (id, user_id, scenario_id, scenario_code, scenario_version,
+		INSERT INTO sessions (id, user_id, guest_session_id, scenario_id, scenario_code, scenario_version,
 		                      status, current_step_code, score)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING ` + sessionColumns
 
 	created, err := scanSession(r.pool.QueryRow(ctx, query,
-		session.ID, session.UserID, session.ScenarioID, session.ScenarioCode,
+		session.ID, userID, guestSessionID, session.ScenarioID, session.ScenarioCode,
 		session.ScenarioVersion, string(session.Status), session.CurrentStepCode, session.Score,
 	))
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
-			active, getErr := r.GetActiveByUserScenario(ctx, session.UserID, session.ScenarioCode)
+			active, getErr := r.GetActiveByOwnerScenario(ctx, session.Owner, session.ScenarioCode)
 			if getErr != nil {
 				return domain.Session{}, fmt.Errorf("чтение активной сессии после конфликта: %w", getErr)
 			}
@@ -76,23 +108,25 @@ func (r *sessionRepository) Get(ctx context.Context, id uuid.UUID) (domain.Sessi
 	return session, nil
 }
 
-// TODO(M2): единственная незавершённая сессия пользователя для блока
-// «продолжить тренировку» (FR12); не нужен training-эндпоинтам.
-func (r *sessionRepository) GetActiveByUser(ctx context.Context, userID uuid.UUID) (domain.Session, error) {
-	_, _ = ctx, userID
+// TODO(M2): единственная незавершённая сессия владельца для блока
+// «продолжить тренировку» (FR12).
+func (r *sessionRepository) GetActiveByOwner(ctx context.Context, owner domain.Owner) (domain.Session, error) {
+	_, _ = ctx, owner
 	return domain.Session{}, domain.ErrNotImplemented
 }
 
-func (r *sessionRepository) GetActiveByUserScenario(
+func (r *sessionRepository) GetActiveByOwnerScenario(
 	ctx context.Context,
-	userID uuid.UUID,
+	owner domain.Owner,
 	scenarioCode string,
 ) (domain.Session, error) {
+	condition, ownerID := ownerWhere(owner, 2)
+
 	session, err := scanSession(r.pool.QueryRow(ctx,
 		"SELECT "+sessionColumns+
-			" FROM sessions WHERE user_id = $1 AND scenario_code = $2 AND status = 'in_progress'"+
+			" FROM sessions WHERE "+condition+" AND scenario_code = $1 AND status = 'in_progress'"+
 			" ORDER BY started_at DESC LIMIT 1",
-		userID, scenarioCode))
+		scenarioCode, ownerID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.Session{}, domain.ErrNotFound
@@ -104,9 +138,6 @@ func (r *sessionRepository) GetActiveByUserScenario(
 	return session, nil
 }
 
-// SaveAnswer одной транзакцией фиксирует ответ и начисляет баллы: инвариант
-// «балл сессии = сумма весов ответов» держится схемой, а не бизнес-логикой.
-// finished переводит сессию в completed и проставляет finished_at (FR14).
 func (r *sessionRepository) SaveAnswer(
 	ctx context.Context,
 	answer domain.Answer,
@@ -165,8 +196,6 @@ func (r *sessionRepository) SaveAnswer(
 	return session, nil
 }
 
-// GetAnswer читает ответ на шаг; для идемпотентности повторной отправки
-// (FR13) отсутствие строки — domain.ErrNotFound.
 func (r *sessionRepository) GetAnswer(
 	ctx context.Context,
 	sessionID uuid.UUID,
@@ -198,7 +227,6 @@ func (r *sessionRepository) GetAnswer(
 	return answer, nil
 }
 
-// ListAnswers возвращает ответы в порядке прохождения (position).
 func (r *sessionRepository) ListAnswers(ctx context.Context, sessionID uuid.UUID) ([]domain.Answer, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, session_id, step_code, option_code, outcome, score_delta,
@@ -235,8 +263,6 @@ func (r *sessionRepository) ListAnswers(ctx context.Context, sessionID uuid.UUID
 	return answers, nil
 }
 
-// Abandon прерывает только сессии в статусе in_progress: повторный вызов
-// завершённой или уже прерванной сессии — domain.ErrNotFound.
 func (r *sessionRepository) Abandon(ctx context.Context, id uuid.UUID) error {
 	tag, err := r.pool.Exec(ctx, `
 		UPDATE sessions
@@ -253,17 +279,18 @@ func (r *sessionRepository) Abandon(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-// ListCompleted — завершённые попытки, свежие первыми.
 func (r *sessionRepository) ListCompleted(
 	ctx context.Context,
-	userID uuid.UUID,
+	owner domain.Owner,
 	scenarioCode string,
 ) ([]domain.Session, error) {
+	condition, ownerID := ownerWhere(owner, 2)
+
 	rows, err := r.pool.Query(ctx,
 		"SELECT "+sessionColumns+" FROM sessions"+
-			" WHERE user_id = $1 AND scenario_code = $2 AND status = 'completed'"+
+			" WHERE "+condition+" AND scenario_code = $1 AND status = 'completed'"+
 			" ORDER BY finished_at DESC",
-		userID, scenarioCode)
+		scenarioCode, ownerID)
 	if err != nil {
 		return nil, fmt.Errorf("выбор истории сценария %s: %w", scenarioCode, err)
 	}
@@ -286,20 +313,20 @@ func (r *sessionRepository) ListCompleted(
 	return sessions, nil
 }
 
-// PreviousCompleted — самая свежая завершённая попытка, завершившаяся раньше,
-// чем сессия before: для сравнения результата (FR23).
 func (r *sessionRepository) PreviousCompleted(
 	ctx context.Context,
-	userID uuid.UUID,
+	owner domain.Owner,
 	scenarioCode string,
 	before uuid.UUID,
 ) (domain.Session, error) {
+	condition, ownerID := ownerWhere(owner, 3)
+
 	session, err := scanSession(r.pool.QueryRow(ctx,
 		"SELECT "+sessionColumns+" FROM sessions"+
-			" WHERE user_id = $1 AND scenario_code = $2 AND status = 'completed'"+
-			" AND finished_at < (SELECT finished_at FROM sessions WHERE id = $3)"+
+			" WHERE "+condition+" AND scenario_code = $1 AND status = 'completed'"+
+			" AND finished_at < (SELECT finished_at FROM sessions WHERE id = $2)"+
 			" ORDER BY finished_at DESC LIMIT 1",
-		userID, scenarioCode, before))
+		scenarioCode, before, ownerID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.Session{}, domain.ErrNotFound
@@ -311,18 +338,30 @@ func (r *sessionRepository) PreviousCompleted(
 	return session, nil
 }
 
-// scanSession читает строку sessions в доменную модель; nullable-колонки
-// (current_step_code, finished_at) разворачиваем в пустые значения.
+// ClaimByGuest переносит все сессии гостя на аккаунт после Register/Login.
+func (r *sessionRepository) ClaimByGuest(ctx context.Context, guestSessionID, userID uuid.UUID) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE sessions SET user_id = $2, guest_session_id = NULL WHERE guest_session_id = $1`,
+		guestSessionID, userID)
+	if err != nil {
+		return fmt.Errorf("перенос сессий гостя %s: %w", guestSessionID, err)
+	}
+
+	return nil
+}
+
 func scanSession(row pgx.Row) (domain.Session, error) {
 	var (
-		session     domain.Session
-		status      string
-		currentStep *string
-		finishedAt  *time.Time
+		session        domain.Session
+		status         string
+		userID         *uuid.UUID
+		guestSessionID *uuid.UUID
+		currentStep    *string
+		finishedAt     *time.Time
 	)
 
 	err := row.Scan(
-		&session.ID, &session.UserID, &session.ScenarioID, &session.ScenarioCode,
+		&session.ID, &userID, &guestSessionID, &session.ScenarioID, &session.ScenarioCode,
 		&session.ScenarioVersion, &status, &currentStep, &session.Score,
 		&session.StartedAt, &finishedAt,
 	)
@@ -330,6 +369,7 @@ func scanSession(row pgx.Row) (domain.Session, error) {
 		return domain.Session{}, err
 	}
 
+	session.Owner = ownerFromColumns(userID, guestSessionID)
 	session.Status = domain.SessionStatus(status)
 	if currentStep != nil {
 		session.CurrentStepCode = *currentStep

@@ -77,6 +77,9 @@ var mappings = []struct {
 	{domain.ErrSessionNotFinished, errorMapping{http.StatusConflict, dto.CodeSessionNotFinished, "Тренировка ещё не завершена"}},
 	{domain.ErrStepNotCurrent, errorMapping{http.StatusBadRequest, dto.CodeStepNotCurrent, "Шаг не является текущим"}},
 	{domain.ErrOptionNotFound, errorMapping{http.StatusBadRequest, dto.CodeOptionNotFound, "Указанного варианта нет на этом шаге"}},
+	{domain.ErrRefreshTokenInvalid, errorMapping{http.StatusUnauthorized, dto.CodeInvalidRefreshToken, "Refresh-токен недействителен или истёк"}},
+	{domain.ErrRefreshTokenMissing, errorMapping{http.StatusBadRequest, dto.CodeInvalidRefreshToken, "Refresh-токен не передан"}},
+	{domain.ErrGuestSessionExpired, errorMapping{http.StatusUnauthorized, dto.CodeGuestSessionExpired, "Гостевая сессия истекла"}},
 }
 
 func writeError(w http.ResponseWriter, r *http.Request, err error) {

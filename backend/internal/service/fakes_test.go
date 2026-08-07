@@ -79,11 +79,31 @@ func (f *fakeProgress) ScenarioStats(
 
 	return f.stats, nil
 }
+func (f *fakeSessions) ClaimByGuest(
+	_ context.Context,
+	_ uuid.UUID,
+	_ uuid.UUID,
+) error {
+	return nil
+}
 
 type fakeSessions struct {
 	repository.SessionRepository
 
 	active map[string]domain.Session
+}
+
+func (f *fakeSessions) GetActiveByOwnerScenario(
+	_ context.Context,
+	owner domain.Owner,
+	scenarioCode string,
+) (domain.Session, error) {
+	session, ok := f.active[scenarioCode]
+	if !ok {
+		return domain.Session{}, domain.ErrNotFound
+	}
+
+	return session, nil
 }
 
 func (f *fakeSessions) GetActiveByUserScenario(

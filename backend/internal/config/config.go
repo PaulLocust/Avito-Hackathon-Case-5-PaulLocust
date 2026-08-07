@@ -46,8 +46,11 @@ type PostgresConfig struct {
 
 type AuthConfig struct {
 	JWTSecret  string
-	TokenTTL   time.Duration
+	Issuer     string
+	AccessTTL  time.Duration
 	BcryptCost int
+	RefreshTTL time.Duration
+	GuestTTL   time.Duration
 }
 
 type LogConfig struct {
@@ -97,7 +100,10 @@ func Load() (Config, error) {
 		},
 		Auth: AuthConfig{
 			JWTSecret:  env("JWT_SECRET", ""),
-			TokenTTL:   envDuration("JWT_TTL", 24*time.Hour),
+			Issuer:     env("JWT_ISSUER", "avito-hackathon-case-5"),
+			AccessTTL:  envDuration("JWT_TTL", 15*time.Minute),
+			RefreshTTL: envDuration("JWT_REFRESH_TTL", 30*24*time.Hour),
+			GuestTTL:   envDuration("GUEST_TTL", 7*24*time.Hour),
 			BcryptCost: envInt("BCRYPT_COST", 10),
 		},
 		Log: LogConfig{
@@ -138,6 +144,14 @@ func (c Config) validate() error {
 
 	if c.Auth.JWTSecret == "" {
 		problems = append(problems, "JWT_SECRET: обязателен, задайте его в .env")
+	}
+
+	if c.Auth.Issuer == "" {
+		problems = append(problems, "JWT_ISSUER: не может быть пустым")
+	}
+
+	if c.Auth.AccessTTL <= 0 || c.Auth.RefreshTTL <= 0 || c.Auth.GuestTTL <= 0 {
+		problems = append(problems, "JWT_TTL, JWT_REFRESH_TTL и GUEST_TTL: ожидается положительная длительность")
 	}
 
 	if c.Production() && len(c.Auth.JWTSecret) < 32 {

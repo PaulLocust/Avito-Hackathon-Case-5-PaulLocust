@@ -129,7 +129,8 @@ func (f *fakeSessionRepo) Create(ctx context.Context, session domain.Session) (d
 	}
 
 	for _, existing := range f.sessions {
-		if existing.UserID == session.UserID && existing.ScenarioCode == session.ScenarioCode &&
+		if existing.Owner == session.Owner &&
+			existing.ScenarioCode == session.ScenarioCode &&
 			existing.Status == domain.StatusInProgress {
 			return domain.Session{}, &domain.ActiveSessionError{SessionID: existing.ID}
 		}
@@ -151,20 +152,67 @@ func (f *fakeSessionRepo) Get(ctx context.Context, id uuid.UUID) (domain.Session
 	return session, nil
 }
 
-func (f *fakeSessionRepo) GetActiveByUser(context.Context, uuid.UUID) (domain.Session, error) {
-	return domain.Session{}, domain.ErrNotImplemented
+func (f *fakeSessionRepo) GetActiveByOwner(
+	ctx context.Context,
+	owner domain.Owner,
+) (domain.Session, error) {
+	_ = ctx
+
+	var active *domain.Session
+
+	for _, session := range f.sessions {
+		if session.Owner != owner ||
+			session.Status != domain.StatusInProgress {
+			continue
+		}
+
+		if active == nil || session.StartedAt.After(active.StartedAt) {
+			sessionCopy := session
+			active = &sessionCopy
+		}
+	}
+
+	if active == nil {
+		return domain.Session{}, domain.ErrNotFound
+	}
+
+	return *active, nil
 }
 
-func (f *fakeSessionRepo) GetActiveByUserScenario(
+func (f *fakeSessionRepo) ClaimByGuest(
 	ctx context.Context,
+	guestSessionID uuid.UUID,
 	userID uuid.UUID,
+) error {
+	_ = ctx
+
+	guestOwner := domain.GuestOwner(guestSessionID)
+	userOwner := domain.UserOwner(userID)
+
+	for id, session := range f.sessions {
+		if session.Owner != guestOwner {
+			continue
+		}
+
+		session.Owner = userOwner
+		f.sessions[id] = session
+	}
+
+	return nil
+}
+
+func (f *fakeSessionRepo) GetActiveByOwnerScenario(
+	ctx context.Context,
+	owner domain.Owner,
 	scenarioCode string,
 ) (domain.Session, error) {
 	_ = ctx
 
 	var active *domain.Session
+
 	for _, session := range f.sessions {
-		if session.UserID != userID || session.ScenarioCode != scenarioCode ||
+		if session.Owner != owner ||
+			session.ScenarioCode != scenarioCode ||
 			session.Status != domain.StatusInProgress {
 			continue
 		}
@@ -261,14 +309,14 @@ func (f *fakeSessionRepo) Abandon(ctx context.Context, id uuid.UUID) error {
 
 func (f *fakeSessionRepo) ListCompleted(
 	ctx context.Context,
-	userID uuid.UUID,
+	owner domain.Owner,
 	scenarioCode string,
 ) ([]domain.Session, error) {
 	_ = ctx
 
 	var completed []domain.Session
 	for _, session := range f.sessions {
-		if session.UserID == userID && session.ScenarioCode == scenarioCode &&
+		if session.Owner == owner && session.ScenarioCode == scenarioCode &&
 			session.Status == domain.StatusCompleted {
 			completed = append(completed, session)
 		}
@@ -287,38 +335,32 @@ func (f *fakeSessionRepo) ListCompleted(
 
 func (f *fakeSessionRepo) PreviousCompleted(
 	ctx context.Context,
-	userID uuid.UUID,
+	owner domain.Owner,
 	scenarioCode string,
-	before uuid.UUID,
+	excludeSessionID uuid.UUID,
 ) (domain.Session, error) {
 	_ = ctx
 
-	beforeSession, ok := f.sessions[before]
-	if !ok {
-		return domain.Session{}, domain.ErrNotFound
-	}
+	var previous domain.Session
+	found := false
 
-	var best *domain.Session
 	for _, session := range f.sessions {
-		if session.ID == before || session.UserID != userID || session.ScenarioCode != scenarioCode ||
-			session.Status != domain.StatusCompleted || session.FinishedAt == nil ||
-			beforeSession.FinishedAt == nil {
+		if session.ID == excludeSessionID ||
+			session.Owner != owner ||
+			session.ScenarioCode != scenarioCode ||
+			session.Status != domain.StatusCompleted {
 			continue
 		}
 
-		if session.FinishedAt.Before(*beforeSession.FinishedAt) {
-			if best == nil || session.FinishedAt.After(*best.FinishedAt) {
-				sessionCopy := session
-				best = &sessionCopy
-			}
-		}
+		previous = session
+		found = true
 	}
 
-	if best == nil {
+	if !found {
 		return domain.Session{}, domain.ErrNotFound
 	}
 
-	return *best, nil
+	return previous, nil
 }
 
 // fakeSignalRepo повторяет порядок результата, совпадающий с порядком кодов.
@@ -438,16 +480,16 @@ func newTestService(t *testing.T) (*trainingService, *fakeSessionRepo) {
 
 // complete — полностью проходит сценарий выборами из choices и возвращает
 // завершённую сессию.
-func complete(t *testing.T, service *trainingService, userID uuid.UUID, choices []string) domain.Session {
+func complete(t *testing.T, service *trainingService, owner domain.Owner, choices []string) domain.Session {
 	t.Helper()
 
 	ctx := context.Background()
-	snapshot, err := service.Start(ctx, userID, "too-good-price", false)
+	snapshot, err := service.Start(ctx, owner, "too-good-price", false)
 	require.NoError(t, err)
 
 	for _, choice := range choices {
 		outcome, err := service.SubmitAnswer(
-			ctx, userID, snapshot.Session.ID, snapshot.Session.CurrentStepCode, choice,
+			ctx, owner, snapshot.Session.ID, snapshot.Session.CurrentStepCode, choice,
 		)
 		require.NoError(t, err)
 
@@ -466,11 +508,12 @@ func complete(t *testing.T, service *trainingService, userID uuid.UUID, choices 
 func TestStart(t *testing.T) {
 	ctx := context.Background()
 	userID := uuid.New()
+	owner := domain.UserOwner(userID)
 
 	t.Run("создаёт сессию со стартовым шагом и фиксирует версию", func(t *testing.T) {
 		service, _ := newTestService(t)
 
-		snapshot, err := service.Start(ctx, userID, "too-good-price", false)
+		snapshot, err := service.Start(ctx, owner, "too-good-price", false)
 
 		require.NoError(t, err)
 		require.Equal(t, domain.StatusInProgress, snapshot.Session.Status)
@@ -485,10 +528,10 @@ func TestStart(t *testing.T) {
 	t.Run("незавершённая сессия — ошибка с её идентификатором", func(t *testing.T) {
 		service, _ := newTestService(t)
 
-		first, err := service.Start(ctx, userID, "too-good-price", false)
+		first, err := service.Start(ctx, owner, "too-good-price", false)
 		require.NoError(t, err)
 
-		_, err = service.Start(ctx, userID, "too-good-price", false)
+		_, err = service.Start(ctx, owner, "too-good-price", false)
 
 		var activeErr *domain.ActiveSessionError
 		require.ErrorAs(t, err, &activeErr)
@@ -498,15 +541,15 @@ func TestStart(t *testing.T) {
 	t.Run("restart прерывает предыдущую и создаёт новую", func(t *testing.T) {
 		service, _ := newTestService(t)
 
-		first, err := service.Start(ctx, userID, "too-good-price", false)
+		first, err := service.Start(ctx, owner, "too-good-price", false)
 		require.NoError(t, err)
 
-		second, err := service.Start(ctx, userID, "too-good-price", true)
+		second, err := service.Start(ctx, owner, "too-good-price", true)
 
 		require.NoError(t, err)
 		require.NotEqual(t, first.Session.ID, second.Session.ID)
 
-		abandoned, err := service.Get(ctx, userID, first.Session.ID)
+		abandoned, err := service.Get(ctx, owner, first.Session.ID)
 		require.NoError(t, err)
 		require.Equal(t, domain.StatusAbandoned, abandoned.Session.Status)
 		require.Nil(t, abandoned.CurrentStep)
@@ -515,7 +558,7 @@ func TestStart(t *testing.T) {
 	t.Run("неизвестный сценарий — не найдено", func(t *testing.T) {
 		service, _ := newTestService(t)
 
-		_, err := service.Start(ctx, userID, "unknown-scenario", false)
+		_, err := service.Start(ctx, owner, "unknown-scenario", false)
 
 		require.ErrorIs(t, err, domain.ErrNotFound)
 	})
@@ -525,12 +568,13 @@ func TestGet(t *testing.T) {
 	ctx := context.Background()
 	service, _ := newTestService(t)
 	userID := uuid.New()
+	owner := domain.UserOwner(userID)
 
-	snapshot, err := service.Start(ctx, userID, "too-good-price", false)
+	snapshot, err := service.Start(ctx, owner, "too-good-price", false)
 	require.NoError(t, err)
 
 	t.Run("владелец видит сессию", func(t *testing.T) {
-		got, err := service.Get(ctx, userID, snapshot.Session.ID)
+		got, err := service.Get(ctx, owner, snapshot.Session.ID)
 
 		require.NoError(t, err)
 		require.Equal(t, snapshot.Session.ID, got.Session.ID)
@@ -538,7 +582,9 @@ func TestGet(t *testing.T) {
 	})
 
 	t.Run("чужой пользователь получает 404", func(t *testing.T) {
-		_, err := service.Get(ctx, uuid.New(), snapshot.Session.ID)
+		otherOwner := domain.UserOwner(uuid.New())
+
+		_, err := service.Get(ctx, otherOwner, snapshot.Session.ID)
 
 		require.ErrorIs(t, err, domain.ErrNotFound)
 	})
@@ -547,14 +593,15 @@ func TestGet(t *testing.T) {
 func TestSubmitAnswer(t *testing.T) {
 	ctx := context.Background()
 	userID := uuid.New()
+	owner := domain.UserOwner(userID)
 
 	t.Run("успешный ответ: баллы, следующий шаг, признаки и альтернатива", func(t *testing.T) {
 		service, _ := newTestService(t)
 
-		snapshot, err := service.Start(ctx, userID, "too-good-price", false)
+		snapshot, err := service.Start(ctx, owner, "too-good-price", false)
 		require.NoError(t, err)
 
-		outcome, err := service.SubmitAnswer(ctx, userID, snapshot.Session.ID, "s1", "b")
+		outcome, err := service.SubmitAnswer(ctx, owner, snapshot.Session.ID, "s1", "b")
 		require.NoError(t, err)
 
 		require.Equal(t, domain.OutcomeRisky, outcome.Answer.Outcome)
@@ -568,7 +615,7 @@ func TestSubmitAnswer(t *testing.T) {
 		require.NotNil(t, outcome.SafeAlternative, "спорному выбору полагается безопасная альтернатива")
 		require.Equal(t, "c", outcome.SafeAlternative.Code)
 
-		outcome, err = service.SubmitAnswer(ctx, userID, snapshot.Session.ID, "s2", "c")
+		outcome, err = service.SubmitAnswer(ctx, owner, snapshot.Session.ID, "s2", "c")
 		require.NoError(t, err)
 		require.Equal(t, 10, outcome.Snapshot.Session.Score)
 		require.Nil(t, outcome.SafeAlternative, "безопасному выбору альтернатива не нужна")
@@ -577,7 +624,7 @@ func TestSubmitAnswer(t *testing.T) {
 	t.Run("терминальный шаг завершает сессию", func(t *testing.T) {
 		service, _ := newTestService(t)
 
-		session := complete(t, service, userID, []string{"c", "c", "a"})
+		session := complete(t, service, owner, []string{"c", "c", "a"})
 
 		require.Equal(t, domain.StatusCompleted, session.Status)
 		require.Equal(t, 10, session.Score) // 10 + 10 - 10
@@ -587,21 +634,21 @@ func TestSubmitAnswer(t *testing.T) {
 	t.Run("повторная отправка возвращает сохранённый результат без начисления", func(t *testing.T) {
 		service, _ := newTestService(t)
 
-		snapshot, err := service.Start(ctx, userID, "too-good-price", false)
+		snapshot, err := service.Start(ctx, owner, "too-good-price", false)
 		require.NoError(t, err)
 
-		first, err := service.SubmitAnswer(ctx, userID, snapshot.Session.ID, "s1", "b")
+		first, err := service.SubmitAnswer(ctx, owner, snapshot.Session.ID, "s1", "b")
 		require.NoError(t, err)
 
 		// Другой вариант игнорируется: засчитан первый выбор (FR13).
-		replayed, err := service.SubmitAnswer(ctx, userID, snapshot.Session.ID, "s1", "c")
+		replayed, err := service.SubmitAnswer(ctx, owner, snapshot.Session.ID, "s1", "c")
 		require.NoError(t, err)
 
 		require.True(t, replayed.AlreadyAnswered)
 		require.Equal(t, first.Answer.OptionCode, replayed.Answer.OptionCode)
 		require.Equal(t, 0, replayed.Snapshot.Session.Score)
 
-		next, err := service.SubmitAnswer(ctx, userID, snapshot.Session.ID, "s2", "c")
+		next, err := service.SubmitAnswer(ctx, owner, snapshot.Session.ID, "s2", "c")
 		require.NoError(t, err)
 		require.Equal(t, 10, next.Snapshot.Session.Score, "баллы не начисляются повторно")
 	})
@@ -609,10 +656,10 @@ func TestSubmitAnswer(t *testing.T) {
 	t.Run("ответ вне очереди — шаг не текущий", func(t *testing.T) {
 		service, _ := newTestService(t)
 
-		snapshot, err := service.Start(ctx, userID, "too-good-price", false)
+		snapshot, err := service.Start(ctx, owner, "too-good-price", false)
 		require.NoError(t, err)
 
-		_, err = service.SubmitAnswer(ctx, userID, snapshot.Session.ID, "s2", "c")
+		_, err = service.SubmitAnswer(ctx, owner, snapshot.Session.ID, "s2", "c")
 
 		require.ErrorIs(t, err, domain.ErrStepNotCurrent)
 	})
@@ -620,10 +667,10 @@ func TestSubmitAnswer(t *testing.T) {
 	t.Run("варианта нет на шаге — ошибка", func(t *testing.T) {
 		service, _ := newTestService(t)
 
-		snapshot, err := service.Start(ctx, userID, "too-good-price", false)
+		snapshot, err := service.Start(ctx, owner, "too-good-price", false)
 		require.NoError(t, err)
 
-		_, err = service.SubmitAnswer(ctx, userID, snapshot.Session.ID, "s1", "z")
+		_, err = service.SubmitAnswer(ctx, owner, snapshot.Session.ID, "s1", "z")
 
 		require.ErrorIs(t, err, domain.ErrOptionNotFound)
 	})
@@ -631,16 +678,16 @@ func TestSubmitAnswer(t *testing.T) {
 	t.Run("завершённую сессию отвечать нельзя", func(t *testing.T) {
 		service, _ := newTestService(t)
 
-		session := complete(t, service, userID, []string{"c", "c", "c"})
+		session := complete(t, service, owner, []string{"c", "c", "c"})
 
 		// Уже отвеченный шаг завершённой сессии — идемпотентный повтор (FR13).
-		replayed, err := service.SubmitAnswer(ctx, userID, session.ID, "s1", "c")
+		replayed, err := service.SubmitAnswer(ctx, owner, session.ID, "s1", "c")
 		require.NoError(t, err)
 		require.True(t, replayed.AlreadyAnswered)
 		require.True(t, replayed.SessionFinished)
 
 		// Новый шаг завершённой сессии отклоняется.
-		_, err = service.SubmitAnswer(ctx, userID, session.ID, "end", "c")
+		_, err = service.SubmitAnswer(ctx, owner, session.ID, "end", "c")
 		require.ErrorIs(t, err, domain.ErrSessionFinished)
 	})
 }
@@ -649,33 +696,35 @@ func TestAbandon(t *testing.T) {
 	ctx := context.Background()
 	userID := uuid.New()
 	service, _ := newTestService(t)
+	owner := domain.UserOwner(userID)
 
-	snapshot, err := service.Start(ctx, userID, "too-good-price", false)
+	snapshot, err := service.Start(ctx, owner, "too-good-price", false)
 	require.NoError(t, err)
 
 	t.Run("прерывает незавершённую", func(t *testing.T) {
-		err := service.Abandon(ctx, userID, snapshot.Session.ID)
+		err := service.Abandon(ctx, owner, snapshot.Session.ID)
 
 		require.NoError(t, err)
 
-		got, err := service.Get(ctx, userID, snapshot.Session.ID)
+		got, err := service.Get(ctx, owner, snapshot.Session.ID)
 		require.NoError(t, err)
 		require.Equal(t, domain.StatusAbandoned, got.Session.Status)
 		require.Nil(t, got.CurrentStep)
 	})
 
 	t.Run("повторное прерывание безвредно", func(t *testing.T) {
-		err := service.Abandon(ctx, userID, snapshot.Session.ID)
+		err := service.Abandon(ctx, owner, snapshot.Session.ID)
 
 		require.NoError(t, err)
 	})
 
 	t.Run("чужую сессию прервать нельзя", func(t *testing.T) {
-		other, err := service.Start(ctx, uuid.New(), "too-good-price", true)
+		otherOwner := domain.UserOwner(uuid.New())
+
+		other, err := service.Start(ctx, otherOwner, "too-good-price", false)
 		require.NoError(t, err)
 
-		err = service.Abandon(ctx, userID, other.Session.ID)
-
+		err = service.Abandon(ctx, owner, other.Session.ID)
 		require.ErrorIs(t, err, domain.ErrNotFound)
 	})
 }
@@ -683,14 +732,15 @@ func TestAbandon(t *testing.T) {
 func TestResult(t *testing.T) {
 	ctx := context.Background()
 	userID := uuid.New()
+	owner := domain.UserOwner(userID)
 
 	t.Run("незавершённая сессия — ошибка", func(t *testing.T) {
 		service, _ := newTestService(t)
 
-		snapshot, err := service.Start(ctx, userID, "too-good-price", false)
+		snapshot, err := service.Start(ctx, owner, "too-good-price", false)
 		require.NoError(t, err)
 
-		_, err = service.Result(ctx, userID, snapshot.Session.ID)
+		_, err = service.Result(ctx, owner, snapshot.Session.ID)
 
 		require.ErrorIs(t, err, domain.ErrSessionNotFinished)
 	})
@@ -698,9 +748,9 @@ func TestResult(t *testing.T) {
 	t.Run("разбор, карта признаков, рекомендации, следующий шаг", func(t *testing.T) {
 		service, _ := newTestService(t)
 
-		session := complete(t, service, userID, []string{"b", "c", "a"})
+		session := complete(t, service, owner, []string{"b", "c", "a"})
 
-		debrief, err := service.Result(ctx, userID, session.ID)
+		debrief, err := service.Result(ctx, owner, session.ID)
 		require.NoError(t, err)
 
 		require.Equal(t, 3, debrief.Result.AnswersCount)
@@ -736,11 +786,11 @@ func TestResult(t *testing.T) {
 	t.Run("сравнение со второй попыткой", func(t *testing.T) {
 		service, _ := newTestService(t)
 
-		complete(t, service, userID, []string{"b", "c", "a"})
+		complete(t, service, owner, []string{"b", "c", "a"})
 
-		second := complete(t, service, userID, []string{"c", "c", "c"})
+		second := complete(t, service, owner, []string{"c", "c", "c"})
 
-		debrief, err := service.Result(ctx, userID, second.ID)
+		debrief, err := service.Result(ctx, owner, second.ID)
 		require.NoError(t, err)
 
 		require.NotNil(t, debrief.Comparison)
@@ -754,9 +804,11 @@ func TestResult(t *testing.T) {
 	t.Run("чужой результат — 404", func(t *testing.T) {
 		service, _ := newTestService(t)
 
-		session := complete(t, service, userID, []string{"c", "c", "c"})
+		otherOwner := domain.UserOwner(uuid.New())
 
-		_, err := service.Result(ctx, uuid.New(), session.ID)
+		session := complete(t, service, owner, []string{"c", "c", "c"})
+
+		_, err := service.Result(ctx, otherOwner, session.ID)
 
 		require.ErrorIs(t, err, domain.ErrNotFound)
 	})
@@ -768,8 +820,9 @@ func TestScoreMatchesAnswers(t *testing.T) {
 	ctx := context.Background()
 	service, sessionRepo := newTestService(t)
 	userID := uuid.New()
+	owner := domain.UserOwner(userID)
 
-	session := complete(t, service, userID, []string{"a", "b", "c"})
+	session := complete(t, service, owner, []string{"a", "b", "c"})
 
 	answers, err := sessionRepo.ListAnswers(ctx, session.ID)
 	require.NoError(t, err)
