@@ -36,15 +36,28 @@ type stubAuth struct {
 	user domain.User
 }
 
-func (s *stubAuth) Register(context.Context, string, string) (domain.User, service.Token, error) {
-	return s.user, service.Token{Value: validToken}, nil
+func (s *stubAuth) Register(context.Context, string, string) (domain.User, service.TokenPair, error) {
+	return s.user, stubPair(), nil
 }
 
-func (s *stubAuth) Login(context.Context, string, string) (domain.User, service.Token, error) {
-	return s.user, service.Token{Value: validToken}, nil
+func (s *stubAuth) Login(context.Context, string, string) (domain.User, service.TokenPair, error) {
+	return s.user, stubPair(), nil
+}
+
+func (s *stubAuth) Refresh(context.Context, string) (domain.User, service.TokenPair, error) {
+	return s.user, stubPair(), nil
 }
 
 func (s *stubAuth) Logout(context.Context, string) error { return nil }
+
+func (s *stubAuth) ClaimGuest(context.Context, uuid.UUID, string) error { return nil }
+
+func stubPair() service.TokenPair {
+	return service.TokenPair{
+		Access:  service.Token{Value: validToken},
+		Refresh: service.Token{Value: "refresh-" + validToken},
+	}
+}
 
 func (s *stubAuth) Authenticate(_ context.Context, token string) (domain.User, error) {
 	if token != validToken {
@@ -94,24 +107,48 @@ type stubTraining struct {
 	resultErr     error
 }
 
-func (s *stubTraining) Start(context.Context, uuid.UUID, string, bool) (domain.SessionSnapshot, error) {
+func (s *stubTraining) Start(context.Context, domain.Owner, string, bool) (domain.SessionSnapshot, error) {
 	return s.startSnapshot, s.startErr
 }
 
-func (s *stubTraining) Get(context.Context, uuid.UUID, uuid.UUID) (domain.SessionSnapshot, error) {
+func (s *stubTraining) Get(context.Context, domain.Owner, uuid.UUID) (domain.SessionSnapshot, error) {
 	return s.getSnapshot, s.getErr
 }
 
-func (s *stubTraining) SubmitAnswer(context.Context, uuid.UUID, uuid.UUID, string, string) (domain.AnswerOutcome, error) {
+func (s *stubTraining) SubmitAnswer(
+	context.Context,
+	domain.Owner,
+	uuid.UUID,
+	string,
+	string,
+) (domain.AnswerOutcome, error) {
 	return s.submitOutcome, s.submitErr
 }
 
-func (s *stubTraining) Abandon(context.Context, uuid.UUID, uuid.UUID) error {
+func (s *stubTraining) Abandon(context.Context, domain.Owner, uuid.UUID) error {
 	return s.abandonErr
 }
 
-func (s *stubTraining) Result(context.Context, uuid.UUID, uuid.UUID) (domain.Debrief, error) {
+func (s *stubTraining) Result(context.Context, domain.Owner, uuid.UUID) (domain.Debrief, error) {
 	return s.result, s.resultErr
+}
+
+// stubGuest выдаёт гостевую сессию: маршруты прохождения пускают гостя,
+// и без этой заглушки requireOwner уронил бы обработчик.
+type stubGuest struct {
+	id uuid.UUID
+}
+
+func (s *stubGuest) Start(context.Context) (service.GuestSessionToken, error) {
+	return service.GuestSessionToken{
+		Value:     "guest-token",
+		OwnerID:   s.id,
+		ExpiresAt: time.Now().Add(time.Hour),
+	}, nil
+}
+
+func (s *stubGuest) Validate(context.Context, string) (uuid.UUID, error) {
+	return s.id, nil
 }
 
 type stubPinger struct{ err error }
@@ -132,6 +169,7 @@ func newTestServerWithTraining(t *testing.T, training service.TrainingService) h
 		Catalog:  &stubCatalog{},
 		Progress: &stubProgress{},
 		Training: training,
+		Guest:    &stubGuest{id: uuid.New()},
 	}
 
 	cfg := config.Config{HTTP: config.HTTPConfig{AllowedOrigins: []string{"*"}}}
@@ -292,13 +330,40 @@ func bearer(request *http.Request) {
 	request.Header.Set("Authorization", "Bearer "+validToken)
 }
 
-// Тренировка — защищённый маршрут: без токена сессию не создать.
-func TestTrainingRequiresToken(t *testing.T) {
-	server := newTestServer(t)
+// Тренировку начинает и гость: сессия заводится на гостевого владельца, а
+// клиент получает куку, по которой прогресс потом переносится на аккаунт.
+// Схема guestSession объявлена в контракте наравне с bearerAuth.
+func TestTrainingAllowsGuest(t *testing.T) {
+	server := newTestServerWithTraining(t, &stubTraining{startSnapshot: sampleSnapshot()})
 
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/sessions",
 		strings.NewReader(`{"scenario_code":"too-good-price"}`)))
+
+	require.Equal(t, http.StatusCreated, recorder.Code)
+
+	var guestCookie *http.Cookie
+	for _, cookie := range recorder.Result().Cookies() {
+		if cookie.Name == "guest_session" {
+			guestCookie = cookie
+		}
+	}
+
+	require.NotNil(t, guestCookie, "гостю должна выдаваться кука сессии")
+	require.True(t, guestCookie.HttpOnly, "кука не должна читаться из JavaScript")
+}
+
+// Невалидный Authorization не превращает пользователя в гостя молча:
+// клиент обязан сначала обновить access-токен.
+func TestTrainingRejectsBrokenToken(t *testing.T) {
+	server := newTestServer(t)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/sessions",
+		strings.NewReader(`{"scenario_code":"too-good-price"}`))
+	request.Header.Set("Authorization", "Bearer протухший")
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
 
 	require.Equal(t, http.StatusUnauthorized, recorder.Code)
 	require.Equal(t, dto.CodeUnauthorized, decodeError(t, recorder).Error.Code)

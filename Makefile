@@ -43,7 +43,13 @@ seed: ## Загрузить сценарии и справочник в подн
 
 .PHONY: test
 test: ## Тесты
-	cd $(BACKEND_DIR) && go test ./... -race -count=1
+	cd $(BACKEND_DIR) && go test ./... -count=1
+
+# -race требует cgo и установленного C-компилятора: на Windows без него
+# команда не запускается вовсе. В CI гонки проверяются всегда (там Linux).
+.PHONY: test-race
+test-race: ## Тесты с детектором гонок (нужен gcc)
+	cd $(BACKEND_DIR) && CGO_ENABLED=1 go test ./... -race -count=1
 
 .PHONY: cover
 cover: ## Тесты с отчётом о покрытии

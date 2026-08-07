@@ -38,11 +38,11 @@ func NewHandler(
 	version string,
 ) *Handler {
 	return &Handler{
-		services:  services,
-		cfg:       cfg,
-		log:       log,
-		db:        db,
-		version:   version,
+		services: services,
+		cfg:      cfg,
+		log:      log,
+		db:       db,
+		version:  version,
 		cookieCfg: security.CookieConfig{
 			Secure:   cfg.Production(),
 			SameSite: http.SameSiteLaxMode,

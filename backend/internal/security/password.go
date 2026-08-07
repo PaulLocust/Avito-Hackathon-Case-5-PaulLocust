@@ -1,4 +1,4 @@
-﻿package security
+package security
 
 type PasswordHasher interface {
 	Hash(password string) (string, error)

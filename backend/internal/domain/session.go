@@ -31,7 +31,7 @@ type User struct {
 type Session struct {
 	ID     uuid.UUID
 	UserID uuid.UUID
-	
+
 	Owner           Owner
 	ScenarioID      int64
 	ScenarioCode    string

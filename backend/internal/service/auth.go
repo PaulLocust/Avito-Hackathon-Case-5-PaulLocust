@@ -63,7 +63,7 @@ func (s *authService) Login(ctx context.Context, nickname, password string) (dom
 		return domain.User{}, TokenPair{}, domain.ErrInvalidCredentials
 	}
 
-	if err := s.hasher().Compare(user.PasswordHash, password); err != nil {
+	if compareErr := s.hasher().Compare(user.PasswordHash, password); compareErr != nil {
 		return domain.User{}, TokenPair{}, domain.ErrInvalidCredentials
 	}
 
@@ -93,11 +93,11 @@ func (s *authService) Refresh(ctx context.Context, rawToken string) (domain.User
 		return domain.User{}, TokenPair{}, domain.ErrRefreshTokenInvalid
 	}
 
-	if err := s.refresh.DeleteByID(ctx, stored.ID); err != nil {
-		if errors.Is(err, domain.ErrNotFound) {
+	if deleteErr := s.refresh.DeleteByID(ctx, stored.ID); deleteErr != nil {
+		if errors.Is(deleteErr, domain.ErrNotFound) {
 			return domain.User{}, TokenPair{}, domain.ErrRefreshTokenInvalid
 		}
-		return domain.User{}, TokenPair{}, err
+		return domain.User{}, TokenPair{}, deleteErr
 	}
 
 	pair, err := s.issuePair(ctx, user, stored.SessionID)
