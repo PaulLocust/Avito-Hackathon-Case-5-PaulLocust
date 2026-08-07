@@ -1,0 +1,11 @@
+# Настройки Redocly CLI для `make api-lint`.
+#
+# nullable-type-sibling отключён: в OAS 3.0 `nullable: true` — штатный способ
+# выразить отсутствие значения у схемы, подключаемой через `$ref`/`allOf`
+# (best_percent, current_step, comparison и т.п.). Правило требует рядом `type`,
+# но у ссылки его нет, а `type: "null"` из рекомендации недопустим в 3.0
+# (правило struct). Контракт остаётся на 3.0.3, поэтому отключаем правило.
+extends:
+  - recommended
+rules:
+  nullable-type-sibling: off

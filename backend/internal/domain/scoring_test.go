@@ -26,8 +26,6 @@ func answers(outcomes ...domain.Outcome) []domain.Answer {
 }
 
 func TestEvaluate(t *testing.T) {
-	t.Skip("TODO(M3): снять после реализации domain.Evaluate")
-
 	thresholds := domain.Thresholds{Resilient: 80, Attentive: 60}
 
 	const (
@@ -134,8 +132,6 @@ func TestEvaluate(t *testing.T) {
 
 // Защита от деления на ноль: сессия без ответов не должна ронять сервис.
 func TestEvaluateEmptyAnswers(t *testing.T) {
-	t.Skip("TODO(M3): снять после реализации domain.Evaluate")
-
 	got := domain.Evaluate(nil, domain.Thresholds{Resilient: 80, Attentive: 60})
 
 	require.Equal(t, 0, got.AnswersCount)
