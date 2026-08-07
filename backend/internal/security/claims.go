@@ -1,4 +1,4 @@
-﻿package security
+package security
 
 import (
 	"github.com/golang-jwt/jwt/v5"

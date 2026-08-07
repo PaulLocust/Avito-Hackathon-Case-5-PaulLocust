@@ -1,4 +1,4 @@
-﻿package security
+package security
 
 func (t Password) String() string {
 	return string(t)
