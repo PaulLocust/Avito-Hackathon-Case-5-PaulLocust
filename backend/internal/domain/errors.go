@@ -23,6 +23,10 @@ var (
 
 	// ErrNotImplemented — заглушка каркаса, транспорт отдаёт на неё 501.
 	ErrNotImplemented = errors.New("функциональность ещё не реализована")
+
+	ErrRefreshTokenInvalid = errors.New("refresh-токен недействителен или истёк")
+	ErrRefreshTokenMissing = errors.New("refresh-токен не передан")
+	ErrGuestSessionExpired = errors.New("гостевая сессия истекла")
 )
 
 // ActiveSessionError — по сценарию уже есть незавершённая сессия.

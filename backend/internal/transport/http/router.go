@@ -12,7 +12,6 @@ import (
 	"github.com/PaulLocust/Avito-Hackathon-Case-5/backend/internal/config"
 )
 
-// NewRouter собирает маршруты. Таблица должна совпадать с api/openapi.yaml.
 func NewRouter(handler *Handler, cfg config.Config, log *slog.Logger) http.Handler {
 	router := chi.NewRouter()
 
@@ -26,7 +25,7 @@ func NewRouter(handler *Handler, cfg config.Config, log *slog.Logger) http.Handl
 		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodOptions},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Request-Id"},
 		ExposedHeaders:   []string{"X-Request-Id"},
-		AllowCredentials: false,
+		AllowCredentials: true, // refresh- и гостевая cookie передаются между frontend и API.
 		MaxAge:           300,
 	}))
 
@@ -37,6 +36,7 @@ func NewRouter(handler *Handler, cfg config.Config, log *slog.Logger) http.Handl
 		api.Route("/auth", func(auth chi.Router) {
 			auth.Post("/register", handler.Register)
 			auth.Post("/login", handler.Login)
+			auth.Post("/refresh", handler.RefreshToken)
 
 			auth.Group(func(protected chi.Router) {
 				protected.Use(handler.requireAuth)
@@ -45,7 +45,7 @@ func NewRouter(handler *Handler, cfg config.Config, log *slog.Logger) http.Handl
 			})
 		})
 
-		// Витрина и справочник доступны гостю (FR4).
+		// Витрина, справочник — доступны и гостю, и юзеру.
 		api.Group(func(public chi.Router) {
 			public.Use(handler.optionalAuth)
 			public.Get("/scenarios", handler.ListScenarios)
@@ -54,17 +54,21 @@ func NewRouter(handler *Handler, cfg config.Config, log *slog.Logger) http.Handl
 			public.Get("/risk-signals/{signalCode}", handler.GetRiskSignal)
 		})
 
+		// Прохождение сценариев доступно и гостю, и пользователю: результаты
+		// сохраняются за владельцем из JWT или guest_session.
+		api.Group(func(guestOK chi.Router) {
+			guestOK.Use(handler.requireOwner)
+			guestOK.Post("/sessions", handler.StartSession)
+			guestOK.Get("/sessions/{sessionId}", handler.GetSession)
+			guestOK.Post("/sessions/{sessionId}/answers", handler.SubmitAnswer)
+			guestOK.Get("/sessions/{sessionId}/result", handler.GetSessionResult)
+			guestOK.Post("/sessions/{sessionId}/abandon", handler.AbandonSession)
+		})
+
+		// Аналитика — только для авторизованных юзеров.
 		api.Group(func(protected chi.Router) {
 			protected.Use(handler.requireAuth)
-
 			protected.Get("/scenarios/{scenarioCode}/attempts", handler.ListAttempts)
-
-			protected.Post("/sessions", handler.StartSession)
-			protected.Get("/sessions/{sessionId}", handler.GetSession)
-			protected.Post("/sessions/{sessionId}/answers", handler.SubmitAnswer)
-			protected.Get("/sessions/{sessionId}/result", handler.GetSessionResult)
-			protected.Post("/sessions/{sessionId}/abandon", handler.AbandonSession)
-
 			protected.Get("/progress", handler.GetProgress)
 			protected.Get("/progress/signals", handler.GetSignalProgress)
 		})

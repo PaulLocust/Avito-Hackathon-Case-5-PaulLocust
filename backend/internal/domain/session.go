@@ -11,25 +11,26 @@ type SessionStatus string
 const (
 	StatusInProgress SessionStatus = "in_progress"
 	StatusCompleted  SessionStatus = "completed"
-	// StatusAbandoned — пользователь начал заново; в прогрессе не учитывается.
-	StatusAbandoned SessionStatus = "abandoned"
+	StatusAbandoned  SessionStatus = "abandoned"
 )
 
 type User struct {
 	ID           uuid.UUID
+	Email        string
 	Nickname     string
 	PasswordHash string // bcrypt (SEC1)
 	CreatedAt    time.Time
+	Role         string
 }
 
-// Session — попытка прохождения.
-//
-// Score равен сумме ScoreDelta ответов: фиксация ответа и обновление балла
-// идут одной транзакцией. ScenarioVersion фиксируется при старте, чтобы
-// правка контента не меняла завершённые сессии (FR32).
+// Session — попытка прохождения. Owner — либо авторизованный юзер, либо
+// гость (см. owner.go); в БД это две nullable-колонки (user_id,
+// guest_session_id) с CHECK "ровно одна заполнена" — репозиторий сам
+// разворачивает Owner в эту пару и обратно (см. ownerColumns/ownerWhere
+// в repository/session.go).
 type Session struct {
 	ID              uuid.UUID
-	UserID          uuid.UUID
+	Owner           Owner
 	ScenarioID      int64
 	ScenarioCode    string
 	ScenarioVersion int
@@ -42,12 +43,7 @@ type Session struct {
 
 func (s Session) Active() bool { return s.Status == StatusInProgress }
 
-// Answer — зафиксированный выбор. Пара (SessionID, StepCode) уникальна:
-// изменить сделанный выбор нельзя (FR13).
-//
-// Outcome и ScoreDelta хранятся в самом ответе, а не вычисляются из контента
-// при чтении: разбор остаётся воспроизводимым после выхода новой версии
-// сценария.
+// Answer — зафиксированный выбор.
 type Answer struct {
 	ID              int64
 	SessionID       uuid.UUID

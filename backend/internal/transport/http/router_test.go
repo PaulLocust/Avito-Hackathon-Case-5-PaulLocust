@@ -35,15 +35,21 @@ type stubAuth struct {
 	user domain.User
 }
 
-func (s *stubAuth) Register(context.Context, string, string) (domain.User, service.Token, error) {
-	return s.user, service.Token{Value: validToken}, nil
+func (s *stubAuth) Register(context.Context, string, string) (domain.User, service.TokenPair, error) {
+	return s.user, service.TokenPair{Access: service.Token{Value: validToken}}, nil
 }
 
-func (s *stubAuth) Login(context.Context, string, string) (domain.User, service.Token, error) {
-	return s.user, service.Token{Value: validToken}, nil
+func (s *stubAuth) Login(context.Context, string, string) (domain.User, service.TokenPair, error) {
+	return s.user, service.TokenPair{Access: service.Token{Value: validToken}}, nil
+}
+
+func (s *stubAuth) Refresh(context.Context, string) (domain.User, service.TokenPair, error) {
+	return s.user, service.TokenPair{Access: service.Token{Value: validToken}}, nil
 }
 
 func (s *stubAuth) Logout(context.Context, string) error { return nil }
+
+func (s *stubAuth) ClaimGuest(context.Context, uuid.UUID, string) error { return nil }
 
 func (s *stubAuth) Authenticate(_ context.Context, token string) (domain.User, error) {
 	if token != validToken {
@@ -79,6 +85,16 @@ func (s *stubProgress) Attempts(context.Context, uuid.UUID, string) ([]domain.At
 	return nil, nil
 }
 
+type stubGuest struct{}
+
+func (stubGuest) Start(context.Context) (service.GuestSessionToken, error) {
+	return service.GuestSessionToken{Value: "guest-token", OwnerID: uuid.New()}, nil
+}
+
+func (stubGuest) Validate(context.Context, string) (uuid.UUID, error) {
+	return uuid.New(), nil
+}
+
 type stubPinger struct{ err error }
 
 func (s stubPinger) Ping(context.Context) error { return s.err }
@@ -88,6 +104,7 @@ func newTestServer(t *testing.T) http.Handler {
 
 	services := &service.Services{
 		Auth:     &stubAuth{user: domain.User{ID: uuid.New(), Nickname: "tester"}},
+		Guest:    stubGuest{},
 		Catalog:  &stubCatalog{},
 		Progress: &stubProgress{},
 	}
@@ -123,6 +140,18 @@ func TestProtectedEndpointRequiresToken(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/progress", http.NoBody))
+
+	require.Equal(t, http.StatusUnauthorized, recorder.Code)
+	require.Equal(t, dto.CodeUnauthorized, decodeError(t, recorder).Error.Code)
+}
+
+func TestGuestCookieCannotAccessAnalytics(t *testing.T) {
+	server := newTestServer(t)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/progress", http.NoBody)
+	request.AddCookie(&http.Cookie{Name: "guest_session", Value: "guest-token"})
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
 
 	require.Equal(t, http.StatusUnauthorized, recorder.Code)
 	require.Equal(t, dto.CodeUnauthorized, decodeError(t, recorder).Error.Code)

@@ -12,7 +12,7 @@ import (
 
 // StartSession — POST /api/v1/sessions.
 func (h *Handler) StartSession(w http.ResponseWriter, r *http.Request) {
-	user, ok := currentUser(r)
+	owner, ok := currentOwner(r)
 	if !ok {
 		writeError(w, r, domain.ErrUnauthorized)
 		return
@@ -23,7 +23,7 @@ func (h *Handler) StartSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	snapshot, err := h.services.Training.Start(r.Context(), user.ID, request.ScenarioCode, request.Restart)
+	snapshot, err := h.services.Training.Start(r.Context(), owner, request.ScenarioCode, request.Restart)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -34,7 +34,7 @@ func (h *Handler) StartSession(w http.ResponseWriter, r *http.Request) {
 
 // GetSession — GET /api/v1/sessions/{sessionId}.
 func (h *Handler) GetSession(w http.ResponseWriter, r *http.Request) {
-	user, ok := currentUser(r)
+	owner, ok := currentOwner(r)
 	if !ok {
 		writeError(w, r, domain.ErrUnauthorized)
 		return
@@ -46,7 +46,7 @@ func (h *Handler) GetSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	snapshot, err := h.services.Training.Get(r.Context(), user.ID, sessionID)
+	snapshot, err := h.services.Training.Get(r.Context(), owner, sessionID)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -57,7 +57,7 @@ func (h *Handler) GetSession(w http.ResponseWriter, r *http.Request) {
 
 // SubmitAnswer — POST /api/v1/sessions/{sessionId}/answers.
 func (h *Handler) SubmitAnswer(w http.ResponseWriter, r *http.Request) {
-	user, ok := currentUser(r)
+	owner, ok := currentOwner(r)
 	if !ok {
 		writeError(w, r, domain.ErrUnauthorized)
 		return
@@ -75,7 +75,7 @@ func (h *Handler) SubmitAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	outcome, err := h.services.Training.SubmitAnswer(
-		r.Context(), user.ID, sessionID, request.StepCode, request.OptionCode,
+		r.Context(), owner, sessionID, request.StepCode, request.OptionCode,
 	)
 	if err != nil {
 		writeError(w, r, err)
@@ -87,7 +87,7 @@ func (h *Handler) SubmitAnswer(w http.ResponseWriter, r *http.Request) {
 
 // GetSessionResult — GET /api/v1/sessions/{sessionId}/result.
 func (h *Handler) GetSessionResult(w http.ResponseWriter, r *http.Request) {
-	user, ok := currentUser(r)
+	owner, ok := currentOwner(r)
 	if !ok {
 		writeError(w, r, domain.ErrUnauthorized)
 		return
@@ -99,7 +99,7 @@ func (h *Handler) GetSessionResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	debrief, err := h.services.Training.Result(r.Context(), user.ID, sessionID)
+	debrief, err := h.services.Training.Result(r.Context(), owner, sessionID)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -110,7 +110,7 @@ func (h *Handler) GetSessionResult(w http.ResponseWriter, r *http.Request) {
 
 // AbandonSession — POST /api/v1/sessions/{sessionId}/abandon.
 func (h *Handler) AbandonSession(w http.ResponseWriter, r *http.Request) {
-	user, ok := currentUser(r)
+	owner, ok := currentOwner(r)
 	if !ok {
 		writeError(w, r, domain.ErrUnauthorized)
 		return
@@ -122,7 +122,7 @@ func (h *Handler) AbandonSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.services.Training.Abandon(r.Context(), user.ID, sessionID); err != nil {
+	if err := h.services.Training.Abandon(r.Context(), owner, sessionID); err != nil {
 		writeError(w, r, err)
 		return
 	}

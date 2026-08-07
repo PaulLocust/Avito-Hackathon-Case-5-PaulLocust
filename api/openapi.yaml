@@ -26,8 +26,9 @@ info:
 
     ## Аутентификация
 
-    JWT в заголовке `Authorization: Bearer <token>`. Токен выдаётся при
-    регистрации и входе (FR1, FR2).
+    JWT передаётся в заголовке `Authorization: Bearer <token>` и выдаётся при
+    регистрации, входе или обновлении токена (FR1, FR2). Refresh-токен живёт
+    только в `HttpOnly` cookie и ротируется через `/api/v1/auth/refresh`.
 
     Эндпоинты делятся на три группы:
 
@@ -120,8 +121,9 @@ paths:
       operationId: register
       summary: Регистрация по нику и паролю
       description: |
-        Создаёт учётную запись и сразу выдаёт токен доступа (FR1, прецедент 1).
-        Пароль хранится только как bcrypt-хеш (SEC1).
+        Создаёт учётную запись и сразу выдаёт короткоживущий JWT доступа
+        (FR1, прецедент 1). Долгоживущий refresh-токен сервер устанавливает
+        в `HttpOnly` cookie; пароль хранится только как bcrypt-хеш (SEC1).
       security: []
       requestBody:
         required: true
@@ -157,8 +159,9 @@ paths:
       operationId: login
       summary: Вход
       description: |
-        Проверяет пару ник/пароль и выдаёт токен (FR2). Ответ не различает
-        «нет такого ника» и «неверный пароль» — обе ситуации дают
+        Проверяет пару ник/пароль, выдаёт JWT доступа и устанавливает
+        refresh-cookie (FR2). Ответ не различает «нет такого ника» и
+        «неверный пароль» — обе ситуации дают
         `invalid_credentials`, чтобы не позволять перебор существующих ников.
       security: []
       requestBody:
@@ -189,14 +192,47 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/v1/auth/refresh:
+    post:
+      tags: [auth]
+      operationId: refreshAccessToken
+      summary: Обновить JWT доступа
+      description: |
+        Ротирует refresh-токен из `HttpOnly` cookie и возвращает новую пару
+        JWT и времени его истечения. Старый refresh-токен сразу становится
+        недействительным.
+      security:
+        - refreshCookie: []
+      responses:
+        "200":
+          description: JWT обновлён; в ответе установлена новая refresh-cookie
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Refresh-cookie не передана
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Refresh-токен недействителен или истёк
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/v1/auth/logout:
     post:
       tags: [auth]
       operationId: logout
       summary: Завершение сессии
       description: |
-        Завершает сессию пользователя (FR2). Клиент обязан удалить токен
-        локально; сервер помечает токен отозванным.
+        Завершает сессию пользователя (FR2): отзывает предъявленный JWT,
+        удаляет все refresh-токены этой сессии и очищает refresh-cookie.
       security:
         - bearerAuth: []
       responses:
@@ -321,7 +357,9 @@ paths:
       operationId: startSession
       summary: Старт тренировки
       description: |
-        Создаёт сессию прохождения и возвращает первый шаг (FR8).
+        Создаёт сессию прохождения и возвращает первый шаг (FR8). Доступно
+        как с JWT, так и гостю с `guest_session` cookie; для нового гостя
+        сервер устанавливает эту cookie.
         Сессия жёстко связывается с текущей версией сценария (FR32):
         последующая правка контента не меняет результат этой попытки.
 
@@ -332,6 +370,7 @@ paths:
         создаёт новую (прецедент 8, п. 2а).
       security:
         - bearerAuth: []
+        - guestSession: []
       requestBody:
         required: true
         content:
@@ -379,6 +418,7 @@ paths:
         Чужая сессия отдаётся как `404` (SEC2).
       security:
         - bearerAuth: []
+        - guestSession: []
       parameters:
         - $ref: "#/components/parameters/SessionId"
       responses:
@@ -401,7 +441,7 @@ paths:
       operationId: submitAnswer
       summary: Зафиксировать выбор на шаге
       description: |
-        Фиксирует выбор пользователя, начисляет баллы и возвращает обучающую
+        Фиксирует выбор владельца сессии, начисляет баллы и возвращает обучающую
         обратную связь вместе со следующим шагом (FR10, FR11, FR15–FR17, FR20).
 
         Ответ содержит всё, что нужно экрану прохождения, — повторный запрос
@@ -417,6 +457,7 @@ paths:
         становится `completed`, разбор доступен по `/sessions/{id}/result`.
       security:
         - bearerAuth: []
+        - guestSession: []
       parameters:
         - $ref: "#/components/parameters/SessionId"
       requestBody:
@@ -480,6 +521,7 @@ paths:
         версии сценария всегда даёт один и тот же результат (FR22).
       security:
         - bearerAuth: []
+        - guestSession: []
       parameters:
         - $ref: "#/components/parameters/SessionId"
       responses:
@@ -518,6 +560,7 @@ paths:
         Операция идемпотентна: повторный вызов на уже прерванной сессии — `204`.
       security:
         - bearerAuth: []
+        - guestSession: []
       parameters:
         - $ref: "#/components/parameters/SessionId"
       responses:
@@ -650,6 +693,16 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: JWT, выданный `/api/v1/auth/register` или `/api/v1/auth/login`.
+    refreshCookie:
+      type: apiKey
+      in: cookie
+      name: refresh_token
+      description: Непрозрачный refresh-токен в `HttpOnly` cookie с путём `/api/v1/auth`.
+    guestSession:
+      type: apiKey
+      in: cookie
+      name: guest_session
+      description: Непрозрачный токен гостевой сессии в `HttpOnly` cookie.
 
   parameters:
     ScenarioCode:
@@ -844,6 +897,8 @@ components:
         - session_not_finished
         - step_not_current
         - option_not_found
+        - invalid_refresh_token
+        - guest_session_expired
         - internal_error
       example: validation_error
 
@@ -1020,11 +1075,13 @@ components:
               description: Проходился ли сценарий ранее (FR6). Только для авторизованного пользователя.
               example: true
             best_percent:
+              type: integer
               allOf:
                 - $ref: "#/components/schemas/Percent"
               nullable: true
               description: Лучший результат пользователя по сценарию (FR7). `null`, если завершённых попыток нет.
             best_level:
+              type: string
               allOf:
                 - $ref: "#/components/schemas/SecurityLevel"
               nullable: true
@@ -1174,6 +1231,7 @@ components:
         status:
           $ref: "#/components/schemas/SessionStatus"
         current_step:
+          type: object
           allOf:
             - $ref: "#/components/schemas/StepView"
           nullable: true
@@ -1288,6 +1346,7 @@ components:
           items:
             $ref: "#/components/schemas/RiskSignalRef"
         safe_alternative:
+          type: object
           allOf:
             - $ref: "#/components/schemas/SafeAlternative"
           nullable: true
@@ -1392,6 +1451,7 @@ components:
               type: string
               example: "Домен только похож на официальный: настоящие страницы оплаты живут на avito.ru."
         safe_alternative:
+          type: object
           allOf:
             - $ref: "#/components/schemas/SafeAlternative"
           nullable: true
@@ -1441,6 +1501,7 @@ components:
           enum: [new_scenario, retry_scenario, explore_signals, all_done]
           example: retry_scenario
         scenario:
+          type: object
           allOf:
             - $ref: "#/components/schemas/ScenarioRef"
           nullable: true
@@ -1465,6 +1526,7 @@ components:
         score:
           $ref: "#/components/schemas/ScoreSummary"
         comparison:
+          type: object
           allOf:
             - $ref: "#/components/schemas/AttemptComparison"
           nullable: true
@@ -1561,15 +1623,18 @@ components:
           description: Всего завершённых попыток.
           example: 7
         best_percent:
+          type: integer
           allOf:
             - $ref: "#/components/schemas/Percent"
           nullable: true
           description: Лучший результат среди всех попыток. `null`, если попыток не было.
         best_level:
+          type: string
           allOf:
             - $ref: "#/components/schemas/SecurityLevel"
           nullable: true
         average_percent:
+          type: integer
           allOf:
             - $ref: "#/components/schemas/Percent"
           nullable: true
@@ -1583,6 +1648,7 @@ components:
             сравнением с предыдущей попыткой, а не временным рядом.
           example: 34
         active_session:
+          type: object
           allOf:
             - $ref: "#/components/schemas/ActiveSession"
           nullable: true

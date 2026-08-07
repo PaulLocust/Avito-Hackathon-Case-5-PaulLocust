@@ -21,6 +21,9 @@ const (
 	CodeStepNotCurrent       = "step_not_current"
 	CodeOptionNotFound       = "option_not_found"
 	CodeInternalError        = "internal_error"
+
+	CodeInvalidRefreshToken = "invalid_refresh_token"
+	CodeGuestSessionExpired = "guest_session_expired"
 )
 
 type ErrorResponse struct {
