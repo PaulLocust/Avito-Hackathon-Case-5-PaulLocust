@@ -23,17 +23,23 @@ type Thresholds struct {
 // Округление арифметическое: 110/120 даёт 92%, как в примерах анализа.
 // Пустой список ответов возвращает нулевой Result.
 func Evaluate(answers []Answer, thresholds Thresholds) Result {
-	n := len(answers)
-	if n == 0 {
-		return Result{}
-	}
-
 	score := 0
 	for _, answer := range answers {
 		score += answer.ScoreDelta
 	}
 
-	minScore, maxScore := -10*n, 10*n
+	return EvaluateTotals(score, len(answers), thresholds)
+}
+
+// EvaluateTotals — та же оценка по готовому агрегату: сумме баллов и числу
+// выборов. Нужна там, где попытки уже свёрнуты запросом (витрина, прогресс),
+// чтобы формула оставалась в одном месте (FR22).
+func EvaluateTotals(score, answersCount int, thresholds Thresholds) Result {
+	if answersCount <= 0 {
+		return Result{}
+	}
+
+	minScore, maxScore := -10*answersCount, 10*answersCount
 	percent := roundPercent((score-minScore)*100, maxScore-minScore)
 
 	return Result{
@@ -42,7 +48,7 @@ func Evaluate(answers []Answer, thresholds Thresholds) Result {
 		MaxScore:     maxScore,
 		Percent:      percent,
 		Level:        LevelFor(percent, thresholds),
-		AnswersCount: n,
+		AnswersCount: answersCount,
 	}
 }
 

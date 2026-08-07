@@ -9,9 +9,16 @@ import (
 // Составные значения, которыми сервисы отвечают транспорту. Транспорт
 // переводит их в DTO по контракту OpenAPI.
 
+// UserScenarioStats — прогресс пользователя по одному сценарию.
+//
+// BestScore и BestAnswers заполняет репозиторий, а BestPercent и BestLevel
+// считает сервис через domain.EvaluateTotals: пороги живут в конфигурации,
+// а формула — в одном месте (FR22).
 type UserScenarioStats struct {
 	Attempted     bool
 	AttemptsCount int
+	BestScore     int
+	BestAnswers   int
 	BestPercent   *int
 	BestLevel     *SecurityLevel
 	LastAttemptAt *time.Time

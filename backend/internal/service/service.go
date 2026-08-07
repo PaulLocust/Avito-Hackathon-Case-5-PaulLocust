@@ -90,7 +90,7 @@ type Services struct {
 func New(repos *repository.Repositories, cfg config.Config) *Services {
 	return &Services{
 		Auth:      &authService{users: repos.Users, cfg: cfg.Auth},
-		Catalog:   &catalogService{scenarios: repos.Scenarios, progress: repos.Progress, sessions: repos.Sessions},
+		Catalog:   &catalogService{scenarios: repos.Scenarios, progress: repos.Progress, sessions: repos.Sessions, thresholds: cfg.Scoring.Thresholds},
 		Training:  &trainingService{sessions: repos.Sessions, scenarios: repos.Scenarios, signals: repos.RiskSignals, thresholds: cfg.Scoring.Thresholds},
 		Progress:  &progressService{progress: repos.Progress, sessions: repos.Sessions, scenarios: repos.Scenarios, thresholds: cfg.Scoring.Thresholds},
 		Reference: &referenceService{signals: repos.RiskSignals, scenarios: repos.Scenarios},
