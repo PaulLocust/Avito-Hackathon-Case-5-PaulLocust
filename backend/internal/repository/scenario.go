@@ -74,10 +74,39 @@ func (r *scenarioRepository) GetByCodeVersion(ctx context.Context, code string, 
 	return r.loadScenario(ctx, "code = $1 AND version = $2", code, version)
 }
 
-// TODO(M5): поиск по steps.risk_signal_codes (пересечение массивов).
+// ListBySignal возвращает активные сценарии, на шагах которых размечен
+// признак риска. Шаги не читаются: карточке справочника достаточно
+// метаданных сценария.
 func (r *scenarioRepository) ListBySignal(ctx context.Context, signalCode string) ([]domain.Scenario, error) {
-	_, _ = ctx, signalCode
-	return nil, domain.ErrNotImplemented
+	query := scenarioSelect + `
+		WHERE is_active AND EXISTS (
+		    SELECT 1 FROM steps st
+		    WHERE st.scenario_id = scenarios.id AND $1 = ANY(st.risk_signal_codes)
+		)
+		ORDER BY id`
+
+	rows, err := r.pool.Query(ctx, query, signalCode)
+	if err != nil {
+		return nil, fmt.Errorf("выбор сценариев по признаку %s: %w", signalCode, err)
+	}
+	defer rows.Close()
+
+	scenarios := make([]domain.Scenario, 0)
+
+	for rows.Next() {
+		scenario, err := scanScenario(rows)
+		if err != nil {
+			return nil, fmt.Errorf("чтение сценария по признаку %s: %w", signalCode, err)
+		}
+
+		scenarios = append(scenarios, scenario)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("перебор сценариев по признаку %s: %w", signalCode, err)
+	}
+
+	return scenarios, nil
 }
 
 // TODO(M3): знаменатель строки «пройдено X из Y».

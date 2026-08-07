@@ -2,8 +2,10 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/PaulLocust/Avito-Hackathon-Case-5/backend/internal/domain"
@@ -15,16 +17,74 @@ type riskSignalRepository struct {
 
 var _ RiskSignalRepository = (*riskSignalRepository)(nil)
 
-// TODO(M5): сортировка по side и code.
+const riskSignalSelect = `
+	SELECT code, side, title, summary, description, how_to_recognize, how_to_act
+	FROM risk_signals`
+
+// List возвращает справочник, при необходимости — только одну сторону сделки.
+// Порядок фиксированный: справочник не должен перетасовываться между
+// запросами.
 func (r *riskSignalRepository) List(ctx context.Context, side *domain.Side) ([]domain.RiskSignal, error) {
-	_, _ = ctx, side
-	return nil, domain.ErrNotImplemented
+	query := riskSignalSelect + " ORDER BY side, code"
+	var args []any
+
+	if side != nil {
+		query = riskSignalSelect + " WHERE side = $1 ORDER BY code"
+		args = append(args, string(*side))
+	}
+
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("выбор признаков риска: %w", err)
+	}
+	defer rows.Close()
+
+	signals := make([]domain.RiskSignal, 0)
+
+	for rows.Next() {
+		signal, err := scanRiskSignal(rows)
+		if err != nil {
+			return nil, fmt.Errorf("чтение признака риска: %w", err)
+		}
+
+		signals = append(signals, signal)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("перебор признаков риска: %w", err)
+	}
+
+	return signals, nil
 }
 
-// TODO(M5)
 func (r *riskSignalRepository) Get(ctx context.Context, code string) (domain.RiskSignal, error) {
-	_, _ = ctx, code
-	return domain.RiskSignal{}, domain.ErrNotImplemented
+	signal, err := scanRiskSignal(r.pool.QueryRow(ctx, riskSignalSelect+" WHERE code = $1", code))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.RiskSignal{}, domain.ErrNotFound
+		}
+
+		return domain.RiskSignal{}, fmt.Errorf("чтение признака риска: %w", err)
+	}
+
+	return signal, nil
+}
+
+func scanRiskSignal(row pgx.Row) (domain.RiskSignal, error) {
+	var (
+		signal domain.RiskSignal
+		side   string
+	)
+
+	err := row.Scan(&signal.Code, &side, &signal.Title, &signal.Summary,
+		&signal.Description, &signal.HowToRecognize, &signal.HowToAct)
+	if err != nil {
+		return domain.RiskSignal{}, err
+	}
+
+	signal.Side = domain.Side(side)
+
+	return signal, nil
 }
 
 // ListByCodes возвращает признаки риска в порядке запрошенных кодов: шаги
