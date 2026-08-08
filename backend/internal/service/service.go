@@ -45,8 +45,6 @@ type AuthService interface {
 	// ClaimGuest переносит прогресс гостя (по токену из guest_session куки)
 	// на только что аутентифицированного пользователя. Вызывается хендлером
 	// сразу после успешного Register/Login, если в запросе была гостевая кука.
-	// Реализация зависит от SessionRepository (см. session.go, M2) —
-	// пока не реализована, возвращает domain.ErrNotImplemented.
 	ClaimGuest(ctx context.Context, userID uuid.UUID, guestToken string) error
 }
 
@@ -70,7 +68,7 @@ type CatalogService interface {
 // TrainingService — движок прохождения (M2). Владелец сессии — либо
 // авторизованный юзер, либо гость (domain.Owner) — оба могут проходить
 // сценарии и сохранять прогресс; аналитика (ProgressService) при этом
-// доступна только реальным юзерам.
+// доступна только реальным юзерам, пока гость не зарегистрируется.
 type TrainingService interface {
 	// Start возвращает *domain.ActiveSessionError, если по сценарию есть
 	// незавершённая сессия и restart == false.
@@ -84,11 +82,14 @@ type TrainingService interface {
 	Result(ctx context.Context, owner domain.Owner, sessionID uuid.UUID) (domain.Debrief, error)
 }
 
-// ProgressService — прогресс и история (M3).
+// ProgressService — прогресс и история (M3). Принимает domain.Owner, а не
+// только userID: репозиторий умеет считать данные и по гостям, но HTTP-слой
+// (requireAuth) пускает сюда только авторизованных пользователей — до
+// регистрации свой прогресс гость не видит, хотя он и копится.
 type ProgressService interface {
-	Overview(ctx context.Context, userID uuid.UUID) (domain.Progress, error)
-	Signals(ctx context.Context, userID uuid.UUID) ([]domain.SignalStat, error)
-	Attempts(ctx context.Context, userID uuid.UUID, scenarioCode string) ([]domain.Attempt, error)
+	Overview(ctx context.Context, owner domain.Owner) (domain.Progress, error)
+	Signals(ctx context.Context, owner domain.Owner) ([]domain.SignalStat, error)
+	Attempts(ctx context.Context, owner domain.Owner, scenarioCode string) ([]domain.Attempt, error)
 }
 
 // ReferenceService — справочник признаков риска (M5).
@@ -135,10 +136,16 @@ func New(repos *repository.Repositories, cfg config.Config) *Services {
 			guests:   guest,
 			cfg:      cfg.Auth,
 		},
-		Guest:     guest,
-		Catalog:   &catalogService{scenarios: repos.Scenarios, progress: repos.Progress, sessions: repos.Sessions, thresholds: cfg.Scoring.Thresholds},
-		Training:  &trainingService{sessions: repos.Sessions, scenarios: repos.Scenarios, signals: repos.RiskSignals, thresholds: cfg.Scoring.Thresholds},
-		Progress:  &progressService{progress: repos.Progress, sessions: repos.Sessions, scenarios: repos.Scenarios, thresholds: cfg.Scoring.Thresholds},
+		Guest:    guest,
+		Catalog:  &catalogService{scenarios: repos.Scenarios, progress: repos.Progress, sessions: repos.Sessions, thresholds: cfg.Scoring.Thresholds},
+		Training: &trainingService{sessions: repos.Sessions, scenarios: repos.Scenarios, signals: repos.RiskSignals, thresholds: cfg.Scoring.Thresholds},
+		Progress: &progressService{
+			progress:   repos.Progress,
+			sessions:   repos.Sessions,
+			scenarios:  repos.Scenarios,
+			signals:    repos.RiskSignals,
+			thresholds: cfg.Scoring.Thresholds,
+		},
 		Reference: &referenceService{signals: repos.RiskSignals, scenarios: repos.Scenarios},
 		Content:   &contentService{scenarios: repos.Scenarios, signals: repos.RiskSignals},
 	}

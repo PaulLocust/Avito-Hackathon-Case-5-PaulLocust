@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/PaulLocust/Avito-Hackathon-Case-5/backend/internal/domain"
+	"github.com/PaulLocust/Avito-Hackathon-Case-5/backend/internal/metrics"
 	"github.com/PaulLocust/Avito-Hackathon-Case-5/backend/internal/repository"
 )
 
@@ -59,6 +60,8 @@ func (s *trainingService) Start(
 	if err != nil {
 		return domain.SessionSnapshot{}, err
 	}
+
+	metrics.SessionsStartedTotal.WithLabelValues(scenario.Code).Inc()
 
 	return s.snapshot(ctx, created, scenario)
 }
@@ -192,6 +195,12 @@ func (s *trainingService) SubmitAnswer(
 		}
 
 		return domain.AnswerOutcome{}, fmt.Errorf("сохранение ответа: %w", err)
+	}
+
+	if finished {
+		result := domain.Evaluate(append(answers, answer), s.thresholds)
+		metrics.SessionsCompletedTotal.WithLabelValues(scenario.Code, string(result.Level)).Inc()
+		metrics.SessionScorePercent.WithLabelValues(scenario.Code).Observe(float64(result.Percent))
 	}
 
 	signals, err := s.loadSignals(ctx, step.RiskSignalCodes)

@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/PaulLocust/Avito-Hackathon-Case-5/backend/internal/config"
 )
@@ -19,6 +20,7 @@ func NewRouter(handler *Handler, cfg config.Config, log *slog.Logger) http.Handl
 	router.Use(requestIDMiddleware)
 	router.Use(recoverMiddleware(log))
 	router.Use(loggingMiddleware(log))
+	router.Use(metricsMiddleware)
 	router.Use(middleware.Timeout(30 * time.Second))
 	router.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   cfg.HTTP.AllowedOrigins,
@@ -31,6 +33,10 @@ func NewRouter(handler *Handler, cfg config.Config, log *slog.Logger) http.Handl
 
 	router.Get("/healthz", handler.Liveness)
 	router.Get("/readyz", handler.Readiness)
+	// /metrics не защищён на уровне приложения намеренно: закрывать его
+	// (network policy, ingress allowlist на Prometheus scrape) — задача
+	// инфраструктуры, а не бэкенда (MNT7).
+	router.Handle("/metrics", promhttp.Handler())
 
 	router.Route("/api/v1", func(api chi.Router) {
 		api.Route("/auth", func(auth chi.Router) {
@@ -54,8 +60,9 @@ func NewRouter(handler *Handler, cfg config.Config, log *slog.Logger) http.Handl
 			public.Get("/risk-signals/{signalCode}", handler.GetRiskSignal)
 		})
 
-		// Прохождение сценариев доступно и гостю, и пользователю: результаты
-		// сохраняются за владельцем из JWT или guest_session.
+		// Прохождение сценариев доступно и гостю, и пользователю: сессии и
+		// ответы пишутся под user_id либо guest_session_id — аналитика
+		// собирается независимо от регистрации.
 		api.Group(func(guestOK chi.Router) {
 			guestOK.Use(handler.requireOwner)
 			guestOK.Post("/sessions", handler.StartSession)
@@ -65,7 +72,10 @@ func NewRouter(handler *Handler, cfg config.Config, log *slog.Logger) http.Handl
 			guestOK.Post("/sessions/{sessionId}/abandon", handler.AbandonSession)
 		})
 
-		// Аналитика — только для авторизованных юзеров.
+		// Аналитика — только для авторизованных: гость видит свой прогресс
+		// только после регистрации/входа, когда ClaimGuest переносит его
+		// сессии на аккаунт (см. handler_auth.go claimGuest). До этого
+		// момента данные копятся, но наружу через этот API не отдаются.
 		api.Group(func(protected chi.Router) {
 			protected.Use(handler.requireAuth)
 			protected.Get("/scenarios/{scenarioCode}/attempts", handler.ListAttempts)

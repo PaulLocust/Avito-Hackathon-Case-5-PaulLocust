@@ -40,7 +40,8 @@ func (h *Handler) GetScenario(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, logger.FromContext(r.Context(), h.log), http.StatusOK, dto.NewScenarioDetail(card))
 }
 
-// ListAttempts — GET /api/v1/scenarios/{scenarioCode}/attempts.
+// ListAttempts — GET /api/v1/scenarios/{scenarioCode}/attempts. Только для
+// авторизованных: как и /progress, доступно только после регистрации.
 func (h *Handler) ListAttempts(w http.ResponseWriter, r *http.Request) {
 	user, ok := currentUser(r)
 	if !ok {
@@ -48,7 +49,7 @@ func (h *Handler) ListAttempts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	attempts, err := h.services.Progress.Attempts(r.Context(), user.ID, chi.URLParam(r, "scenarioCode"))
+	attempts, err := h.services.Progress.Attempts(r.Context(), domain.UserOwner(user.ID), chi.URLParam(r, "scenarioCode"))
 	if err != nil {
 		writeError(w, r, err)
 		return

@@ -109,10 +109,15 @@ func (r *scenarioRepository) ListBySignal(ctx context.Context, signalCode string
 	return scenarios, nil
 }
 
-// TODO(M3): знаменатель строки «пройдено X из Y».
+// CountActive — знаменатель строки «пройдено X из Y» на главной (FR25).
 func (r *scenarioRepository) CountActive(ctx context.Context) (int, error) {
-	_ = ctx
-	return 0, domain.ErrNotImplemented
+	var count int
+
+	if err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM scenarios WHERE is_active`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("подсчёт активных сценариев: %w", err)
+	}
+
+	return count, nil
 }
 
 // TODO(M5): в одной транзакции — при совпадении content_hash ничего не

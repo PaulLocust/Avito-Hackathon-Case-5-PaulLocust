@@ -52,7 +52,8 @@ func ownerFromColumns(userID, guestSessionID *uuid.UUID) domain.Owner {
 }
 
 // ownerWhere — условие WHERE по владельцу и позиционный аргумент начиная
-// с индекса argPos.
+// с индекса argPos. Переиспользуется и репозиторием прогресса (progress.go):
+// аналитика собирается по тому же ключу (user_id либо guest_session_id).
 func ownerWhere(owner domain.Owner, argPos int) (string, uuid.UUID) {
 	if owner.Kind == domain.OwnerGuest {
 		return fmt.Sprintf("guest_session_id = $%d", argPos), owner.ID
@@ -108,11 +109,25 @@ func (r *sessionRepository) Get(ctx context.Context, id uuid.UUID) (domain.Sessi
 	return session, nil
 }
 
-// TODO(M2): единственная незавершённая сессия владельца для блока
-// «продолжить тренировку» (FR12).
+// GetActiveByOwner — единственная незавершённая сессия владельца (юзера или
+// гостя), независимо от сценария. Используется блоком «продолжить
+// тренировку» на главной (FR12).
 func (r *sessionRepository) GetActiveByOwner(ctx context.Context, owner domain.Owner) (domain.Session, error) {
-	_, _ = ctx, owner
-	return domain.Session{}, domain.ErrNotImplemented
+	condition, ownerID := ownerWhere(owner, 1)
+
+	session, err := scanSession(r.pool.QueryRow(ctx,
+		"SELECT "+sessionColumns+" FROM sessions WHERE "+condition+" AND status = 'in_progress'"+
+			" ORDER BY started_at DESC LIMIT 1",
+		ownerID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Session{}, domain.ErrNotFound
+		}
+
+		return domain.Session{}, fmt.Errorf("поиск активной сессии владельца: %w", err)
+	}
+
+	return session, nil
 }
 
 func (r *sessionRepository) GetActiveByOwnerScenario(
@@ -339,6 +354,8 @@ func (r *sessionRepository) PreviousCompleted(
 }
 
 // ClaimByGuest переносит все сессии гостя на аккаунт после Register/Login.
+// Это и есть момент, когда накопленная гостевая аналитика «материализуется»
+// под учётной записью и становится доступна через /progress (FR12).
 func (r *sessionRepository) ClaimByGuest(ctx context.Context, guestSessionID, userID uuid.UUID) error {
 	_, err := r.pool.Exec(ctx,
 		`UPDATE sessions SET user_id = $2, guest_session_id = NULL WHERE guest_session_id = $1`,

@@ -79,17 +79,21 @@ func (s *stubCatalog) Get(context.Context, *uuid.UUID, string) (domain.ScenarioC
 	return domain.ScenarioCard{}, domain.ErrNotFound
 }
 
+// stubProgress: интерфейс ProgressService принимает domain.Owner — этим же
+// сигнатурам должна соответствовать заглушка. HTTP-хендлеры (requireAuth)
+// передают сюда только domain.UserOwner, но контракт сервиса шире (см.
+// service/service.go): он умеет работать и с гостевым Owner.
 type stubProgress struct{}
 
-func (s *stubProgress) Overview(context.Context, uuid.UUID) (domain.Progress, error) {
+func (s *stubProgress) Overview(context.Context, domain.Owner) (domain.Progress, error) {
 	return domain.Progress{TotalScenarios: 5}, nil
 }
 
-func (s *stubProgress) Signals(context.Context, uuid.UUID) ([]domain.SignalStat, error) {
+func (s *stubProgress) Signals(context.Context, domain.Owner) ([]domain.SignalStat, error) {
 	return nil, nil
 }
 
-func (s *stubProgress) Attempts(context.Context, uuid.UUID, string) ([]domain.Attempt, error) {
+func (s *stubProgress) Attempts(context.Context, domain.Owner, string) ([]domain.Attempt, error) {
 	return nil, nil
 }
 
@@ -224,6 +228,8 @@ func TestHealthEndpoints(t *testing.T) {
 	require.Contains(t, recorder.Header().Get("Content-Type"), "application/json")
 }
 
+// /progress остаётся защищённым маршрутом: гость без токена аналитику не
+// видит, она станет доступна только после регистрации/входа.
 func TestProtectedEndpointRequiresToken(t *testing.T) {
 	server := newTestServer(t)
 
@@ -476,4 +482,15 @@ func TestForeignSessionNotFound(t *testing.T) {
 
 	require.Equal(t, http.StatusNotFound, recorder.Code)
 	require.Equal(t, dto.CodeNotFound, decodeError(t, recorder).Error.Code)
+}
+
+// Метрики Prometheus доступны без авторизации, но не мешают остальному API.
+func TestMetricsEndpointExposed(t *testing.T) {
+	server := newTestServer(t)
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", http.NoBody))
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Contains(t, recorder.Header().Get("Content-Type"), "text/plain")
 }

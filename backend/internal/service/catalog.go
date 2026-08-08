@@ -92,7 +92,9 @@ func (s *catalogService) Get(
 }
 
 // scenarioStats возвращает статистику пользователя по сценариям; для гостя —
-// nil, и карточки собираются без прогресса.
+// nil, и карточки собираются без прогресса (FR4). Даже если у гостя уже
+// копится история (SubmitAnswer доступен и ему), витрина её не показывает —
+// это тот же принцип, что и у /progress: до регистрации свой прогресс не виден.
 func (s *catalogService) scenarioStats(
 	ctx context.Context,
 	userID *uuid.UUID,
@@ -101,7 +103,7 @@ func (s *catalogService) scenarioStats(
 		return nil, nil
 	}
 
-	stats, err := s.progress.ScenarioStats(ctx, *userID)
+	stats, err := s.progress.ScenarioStats(ctx, domain.UserOwner(*userID))
 	if err != nil {
 		return nil, fmt.Errorf("статистика по сценариям: %w", err)
 	}

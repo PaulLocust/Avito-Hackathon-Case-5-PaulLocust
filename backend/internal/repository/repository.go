@@ -119,10 +119,18 @@ type SessionRepository interface {
 // ────────────────────────────────────────────────────────────────────────────────
 //
 
+// ProgressRepository работает с domain.Owner, а не только с userID: данные
+// прогресса копятся и по гостевым сессиям (guest_session_id) — иначе
+// прохождения до регистрации терялись бы для аналитики. Отдавать эти данные
+// наружу гостю или нет — решает транспортный слой (requireAuth), не этот
+// репозиторий.
 type ProgressRepository interface {
-	ScenarioStats(ctx context.Context, userID uuid.UUID) (map[string]domain.UserScenarioStats, error)
-	Summary(ctx context.Context, userID uuid.UUID) (domain.Progress, error)
-	SignalStats(ctx context.Context, userID uuid.UUID) ([]domain.SignalStat, error)
+	ScenarioStats(ctx context.Context, owner domain.Owner) (map[string]domain.UserScenarioStats, error)
+	// ScoredAttempts — завершённые попытки владельца по всем сценариям, в
+	// хронологическом порядке (по finished_at). Только сырые данные:
+	// percent/level считает сервис через domain.EvaluateTotals (FR22).
+	ScoredAttempts(ctx context.Context, owner domain.Owner) ([]domain.ScoredAttempt, error)
+	SignalStats(ctx context.Context, owner domain.Owner) ([]domain.SignalStat, error)
 }
 
 //

@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/PaulLocust/Avito-Hackathon-Case-5/backend/internal/domain"
 	"github.com/PaulLocust/Avito-Hackathon-Case-5/backend/internal/logger"
+	"github.com/PaulLocust/Avito-Hackathon-Case-5/backend/internal/metrics"
 	"github.com/PaulLocust/Avito-Hackathon-Case-5/backend/internal/security"
 )
 
@@ -35,7 +37,7 @@ func userFromContext(ctx context.Context) (domain.User, bool) {
 }
 
 // ownerFromContext — владелец сессии прохождения: юзер или гость.
-// Кладётся requireAuth/optionalAuth.
+// Кладётся requireAuth/optionalAuth/requireOwner.
 func ownerFromContext(ctx context.Context) (domain.Owner, bool) {
 	owner, ok := ctx.Value(ownerContextKey{}).(domain.Owner)
 	return owner, ok
@@ -72,6 +74,26 @@ func loggingMiddleware(log *slog.Logger) func(http.Handler) http.Handler {
 			)
 		})
 	}
+}
+
+// metricsMiddleware пишет метрики Prometheus на каждый запрос (MNT7):
+// счётчик по коду ответа и гистограмму длительности. Метка route — шаблон
+// маршрута из chi (RoutePattern), а не сырой путь: /sessions/{uuid} иначе
+// дал бы неограниченную кардинальность меток.
+func metricsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		wrapped := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+
+		next.ServeHTTP(wrapped, r)
+
+		route := chi.RouteContext(r.Context()).RoutePattern()
+		if route == "" {
+			route = "unmatched"
+		}
+
+		metrics.ObserveHTTP(r.Method, route, wrapped.Status(), started)
+	})
 }
 
 // recoverMiddleware не даёт панике остановить сервис (REL3).
@@ -114,7 +136,8 @@ func accessToken(r *http.Request) (string, bool) {
 }
 
 // requireAuth — доступ только авторизованным. Вешать на аналитику
-// (/progress, /auth/me и т.п.) — гость сюда не пройдёт.
+// (/progress, /auth/me и т.п.) — гость сюда не пройдёт: его накопленный
+// прогресс становится виден только после регистрации/входа (ClaimGuest).
 func (h *Handler) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, ok := accessToken(r)
@@ -148,9 +171,11 @@ func (h *Handler) optionalAuth(next http.Handler) http.Handler {
 	})
 }
 
-// requireOwner разрешает прохождение и пользователю, и гостю. Наличие
-// невалидного Authorization не превращает пользователя молча в гостя: клиент
-// должен сначала обновить access JWT через refresh endpoint.
+// requireOwner разрешает прохождение и пользователю, и гостю: сессии и
+// ответы (SubmitAnswer) пишутся под guest_session_id, поэтому аналитика
+// собирается и по неавторизованным. Наличие невалидного Authorization не
+// превращает пользователя молча в гостя: клиент должен сначала обновить
+// access JWT через refresh endpoint.
 func (h *Handler) requireOwner(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "" {

@@ -8,7 +8,9 @@ import (
 	"github.com/PaulLocust/Avito-Hackathon-Case-5/backend/internal/transport/http/dto"
 )
 
-// GetProgress — GET /api/v1/progress.
+// GetProgress — GET /api/v1/progress. Только для авторизованных (requireAuth):
+// гость видит прогресс лишь после регистрации, когда его сессии перенесены
+// с guest_session_id на user_id.
 func (h *Handler) GetProgress(w http.ResponseWriter, r *http.Request) {
 	user, ok := currentUser(r)
 	if !ok {
@@ -16,7 +18,7 @@ func (h *Handler) GetProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	progress, err := h.services.Progress.Overview(r.Context(), user.ID)
+	progress, err := h.services.Progress.Overview(r.Context(), domain.UserOwner(user.ID))
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -33,7 +35,7 @@ func (h *Handler) GetSignalProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stats, err := h.services.Progress.Signals(r.Context(), user.ID)
+	stats, err := h.services.Progress.Signals(r.Context(), domain.UserOwner(user.ID))
 	if err != nil {
 		writeError(w, r, err)
 		return

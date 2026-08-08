@@ -69,7 +69,7 @@ type fakeProgress struct {
 
 func (f *fakeProgress) ScenarioStats(
 	_ context.Context,
-	_ uuid.UUID,
+	_ domain.Owner,
 ) (map[string]domain.UserScenarioStats, error) {
 	f.called = true
 

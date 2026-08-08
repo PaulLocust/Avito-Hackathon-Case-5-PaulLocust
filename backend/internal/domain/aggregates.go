@@ -24,6 +24,17 @@ type UserScenarioStats struct {
 	LastAttemptAt *time.Time
 }
 
+// ScoredAttempt — сырой результат одной завершённой попытки для агрегатов
+// прогресса. Владелец — юзер или гость (Owner), поэтому данные копятся и
+// до регистрации; percent/level считает сервис через EvaluateTotals (FR22),
+// формула остаётся в одном месте, а не дублируется в SQL.
+type ScoredAttempt struct {
+	ScenarioCode string
+	Score        int
+	AnswersCount int
+	FinishedAt   time.Time
+}
+
 type ScenarioCard struct {
 	Scenario        Scenario
 	Stats           *UserScenarioStats // nil для гостя
