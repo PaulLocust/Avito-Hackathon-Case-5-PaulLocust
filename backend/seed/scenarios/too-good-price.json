@@ -16,7 +16,10 @@
         "message": "Здравствуйте! Да, телефон в наличии, состояние идеальное. Цена такая, потому что срочно нужны деньги — улетаю завтра. Берёте?",
         "context": "Такая же модель в других объявлениях стоит в два раза дороже."
       },
-      "risk_signals": ["RISK_TOO_GOOD_PRICE", "RISK_URGENCY_PRESSURE"],
+      "risk_signals": [
+        "RISK_TOO_GOOD_PRICE",
+        "RISK_URGENCY_PRESSURE"
+      ],
       "options": [
         {
           "code": "a",
@@ -40,7 +43,7 @@
           "outcome": "safe",
           "score": 10,
           "feedback": "Разговор сразу переходит к проверяемому: при доставке платформы деньги придут продавцу только после получения товара. Добросовестного продавца это устраивает, и низкая цена перестаёт быть риском.",
-          "next_step": "s2"
+          "next_step": "s3"
         }
       ]
     },
@@ -52,7 +55,10 @@
         "message": "Через доставку долго, а я уезжаю. Давайте так: переведите 3000 ₽ задатка на карту, я сниму объявление и придержу телефон до вечера.",
         "context": "Продавец прислал номер карты на чужое имя."
       },
-      "risk_signals": ["RISK_PREPAY_OUTSIDE", "RISK_URGENCY_PRESSURE"],
+      "risk_signals": [
+        "RISK_PREPAY_OUTSIDE",
+        "RISK_URGENCY_PRESSURE"
+      ],
       "options": [
         {
           "code": "a",
@@ -91,7 +97,10 @@
           "caption": "avito-dostavka-pay.ru/order/88213"
         }
       },
-      "risk_signals": ["RISK_PHISHING_LINK", "RISK_URGENCY_PRESSURE"],
+      "risk_signals": [
+        "RISK_PHISHING_LINK",
+        "RISK_URGENCY_PRESSURE"
+      ],
       "options": [
         {
           "code": "a",
@@ -126,7 +135,9 @@
         "sender": "narrator",
         "message": "Разговор окончен. Разберём, где в нём были признаки риска и какие решения защищали вас, а какие — нет."
       },
-      "risk_signals": ["RISK_TOO_GOOD_PRICE"]
+      "risk_signals": [
+        "RISK_TOO_GOOD_PRICE"
+      ]
     }
   ]
 }

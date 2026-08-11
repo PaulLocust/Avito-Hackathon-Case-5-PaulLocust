@@ -120,15 +120,121 @@ func (r *scenarioRepository) CountActive(ctx context.Context) (int, error) {
 	return count, nil
 }
 
-// TODO(M5): в одной транзакции — при совпадении content_hash ничего не
-// менять, иначе снять is_active со старой версии и записать новую.
+// Upsert сохраняет сценарий из файла контента.
+//
+// Версии не переписываются: при изменении содержимого активная версия
+// снимается с публикации, а новая добавляется рядом. Сессии ссылаются на
+// конкретную версию, поэтому уже завершённые попытки продолжают разбираться
+// на том тексте, который видел пользователь (FR32).
+//
+// Возвращает номер активной версии и признак того, была ли она создана
+// сейчас. Совпадение content_hash означает, что контент не менялся, — тогда
+// не делается ничего.
 func (r *scenarioRepository) Upsert(
 	ctx context.Context,
 	scenario domain.Scenario,
 	contentHash string,
 ) (int, bool, error) {
-	_, _, _ = ctx, scenario, contentHash
-	return 0, false, domain.ErrNotImplemented
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, false, fmt.Errorf("начало транзакции загрузки сценария %s: %w", scenario.Code, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var (
+		activeVersion int
+		activeHash    string
+	)
+
+	err = tx.QueryRow(ctx,
+		`SELECT version, content_hash FROM scenarios WHERE code = $1 AND is_active`,
+		scenario.Code).Scan(&activeVersion, &activeHash)
+
+	switch {
+	case err == nil && activeHash == contentHash:
+		return activeVersion, false, nil
+	case err != nil && !errors.Is(err, pgx.ErrNoRows):
+		return 0, false, fmt.Errorf("чтение активной версии сценария %s: %w", scenario.Code, err)
+	}
+
+	var maxVersion int
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(MAX(version), 0) FROM scenarios WHERE code = $1`,
+		scenario.Code).Scan(&maxVersion); err != nil {
+		return 0, false, fmt.Errorf("чтение версий сценария %s: %w", scenario.Code, err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE scenarios SET is_active = FALSE WHERE code = $1 AND is_active`,
+		scenario.Code); err != nil {
+		return 0, false, fmt.Errorf("снятие с публикации сценария %s: %w", scenario.Code, err)
+	}
+
+	version := maxVersion + 1
+
+	var scenarioID int64
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO scenarios (code, version, role, title, description, intro, difficulty,
+		                       steps_count, estimated_minutes, is_active, content_hash)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, $10)
+		RETURNING id`,
+		scenario.Code, version, string(scenario.Role), scenario.Title, scenario.Description,
+		scenario.Intro, string(scenario.Difficulty), scenario.StepsCount,
+		scenario.EstimatedMinutes, contentHash).Scan(&scenarioID); err != nil {
+		return 0, false, fmt.Errorf("сохранение сценария %s: %w", scenario.Code, err)
+	}
+
+	if err := insertSteps(ctx, tx, scenarioID, scenario); err != nil {
+		return 0, false, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, false, fmt.Errorf("фиксация загрузки сценария %s: %w", scenario.Code, err)
+	}
+
+	return version, true, nil
+}
+
+// insertSteps пишет шаги и варианты. Содержимое шага сохраняется как JSONB
+// сериализацией доменной структуры — тем же форматом, каким его читает
+// loadSteps.
+func insertSteps(ctx context.Context, tx pgx.Tx, scenarioID int64, scenario domain.Scenario) error {
+	for position, step := range scenario.Steps {
+		content, err := json.Marshal(step.Content)
+		if err != nil {
+			return fmt.Errorf("сериализация содержимого шага %s: %w", step.Code, err)
+		}
+
+		var stepID int64
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO steps (scenario_id, code, type, position, content, risk_signal_codes, is_start)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
+			RETURNING id`,
+			scenarioID, step.Code, string(step.Type), position+1, content,
+			step.RiskSignalCodes, step.IsStart).Scan(&stepID); err != nil {
+			return fmt.Errorf("сохранение шага %s сценария %s: %w", step.Code, scenario.Code, err)
+		}
+
+		for optionPosition, option := range step.Options {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO options (step_id, code, text, outcome, score, feedback, next_step_code, position)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+				stepID, option.Code, option.Text, string(option.Outcome), option.Score,
+				option.Feedback, nullableStr(option.NextStepCode), optionPosition+1); err != nil {
+				return fmt.Errorf("сохранение варианта %s шага %s: %w", option.Code, step.Code, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func nullableStr(value string) any {
+	if value == "" {
+		return nil
+	}
+
+	return value
 }
 
 // loadScenario читает сценарий с шагами и вариантами; отсутствие строки —

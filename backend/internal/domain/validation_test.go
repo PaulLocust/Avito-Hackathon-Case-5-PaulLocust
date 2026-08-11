@@ -54,7 +54,6 @@ func knownSignals() map[string]domain.RiskSignal {
 }
 
 func TestValidateScenario(t *testing.T) {
-	t.Skip("TODO(M5): снять после реализации domain.ValidateScenario")
 
 	tests := []struct {
 		name    string
